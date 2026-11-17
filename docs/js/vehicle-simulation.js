@@ -1,0 +1,620 @@
+"use strict";
+
+(function exposeVehicleSimulation(root) {
+  const ALERTS = Object.freeze({
+    GREEN: "Careful! Accident hotspot ahead. Please slow down.",
+    ORANGE: "Attention! Accident hotspot ahead. Drive carefully.",
+    RED: "Warning! High-risk accident hotspot ahead. Reduce your speed!",
+  });
+  const CLUSTER_ALERTS = Object.freeze({
+    GREEN: "Caution. You are entering a low-risk accident cluster. Please slow down.",
+    ORANGE: "Attention. You are entering a medium-risk accident cluster. Drive carefully.",
+    RED: "Warning. You are entering a high-risk accident cluster. Reduce your speed.",
+  });
+  const CLUSTER_APPROACH_ALERT = "Careful! Accident hotspot ahead. Please slow down.";
+  const CLUSTER_APPROACH_DISTANCE_METERS = 10;
+  const RISK_RANK = Object.freeze({ GREEN: 1, ORANGE: 2, RED: 3 });
+  const RISK_LABEL = Object.freeze({ GREEN: "Low risk", ORANGE: "Medium risk", RED: "High risk" });
+  // Keep these warning radii aligned with config.WARNING_BUFFER_M.
+  const WARNING_BUFFER_METERS = Object.freeze({ GREEN: 50, ORANGE: 100, RED: 150 });
+  const EARTH_RADIUS_METERS = 6371008.8;
+
+  function initialize({ map, wfsUrl, geometry }) {
+    const elements = {
+      toggle: document.getElementById("simulation-toggle"),
+      start: document.getElementById("simulation-start"),
+      pause: document.getElementById("simulation-pause"),
+      reset: document.getElementById("simulation-reset"),
+      state: document.getElementById("simulation-state"),
+      position: document.getElementById("vehicle-position"),
+      hotspot: document.getElementById("vehicle-hotspot-status"),
+      alert: document.getElementById("vehicle-alert"),
+    };
+    if (!map || !geometry || Object.values(elements).some((element) => !element)) return;
+
+    let enabled = false;
+    let running = false;
+    let autoDrive = false;
+    let frameId = null;
+    let lastFrameTime = 0;
+    let routeCoordinates = null;
+    let routeSegments = [];
+    let routeLength = 0;
+    let routePromise = null;
+    let hotspotFeatures = null;
+    let hotspotPromise = null;
+    let clusterFeatures = null;
+    let clusterPromise = null;
+    let vehicleMarker = null;
+    let routeProgress = 0;
+    let lateralOffset = 0;
+    let activeHotspotIds = new Set();
+    let activeClusterIds = new Set();
+    let approachAlertedClusterIds = new Set();
+    let suppressAlertsOnce = false;
+    const pressedKeys = new Set();
+
+    function setState(message) {
+      elements.state.textContent = message;
+    }
+
+    function riskClass(feature) {
+      return String((feature.properties || {}).Sev_Class
+        || (feature.properties || {}).Severity_Class || "").trim().toUpperCase();
+    }
+
+    function riskRank(feature) {
+      return RISK_RANK[riskClass(feature)] || 0;
+    }
+
+    function haversineMeters(first, second) {
+      const latitude1 = first[1] * Math.PI / 180;
+      const latitude2 = second[1] * Math.PI / 180;
+      const deltaLatitude = latitude2 - latitude1;
+      const deltaLongitude = (second[0] - first[0]) * Math.PI / 180;
+      const a = Math.sin(deltaLatitude / 2) ** 2
+        + Math.cos(latitude1) * Math.cos(latitude2) * Math.sin(deltaLongitude / 2) ** 2;
+      return 2 * EARTH_RADIUS_METERS * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function loadLayer(typeName) {
+      const params = new URLSearchParams({
+        SERVICE: "WFS",
+        VERSION: "2.0.0",
+        REQUEST: "GetFeature",
+        TYPENAMES: typeName,
+        OUTPUTFORMAT: "application/json",
+        SRSNAME: "EPSG:4326",
+        COUNT: "10000",
+      });
+      return fetch(`${wfsUrl}?${params.toString()}`).then((response) => {
+        if (!response.ok) throw new Error(`${typeName} returned ${response.status}`);
+        return response.json();
+      }).then((data) => Array.isArray(data.features) ? data.features : []);
+    }
+
+    function loadHotspots() {
+      if (hotspotFeatures) return Promise.resolve(hotspotFeatures);
+      const localHotspots = root.TrafficHotspotPoints;
+      if (localHotspots && Array.isArray(localHotspots.features)) {
+        hotspotFeatures = localHotspots.features.filter((feature) => (
+          feature.geometry && feature.geometry.type === "Point"
+        ));
+        if (hotspotFeatures.length) return Promise.resolve(hotspotFeatures);
+      }
+      if (!hotspotPromise) {
+        hotspotPromise = loadLayer("traffic:hotspot_points").then((features) => {
+          hotspotFeatures = features.filter((feature) => (
+            feature.geometry && feature.geometry.type === "Point"
+          ));
+          if (hotspotFeatures.length === 0) throw new Error("No hotspot points were returned.");
+          return hotspotFeatures;
+        }).catch((error) => {
+          hotspotPromise = null;
+          throw error;
+        });
+      }
+      return hotspotPromise;
+    }
+
+    function loadClusters() {
+      if (clusterFeatures) return Promise.resolve(clusterFeatures);
+      const localClusters = root.TrafficDBSCANClusters;
+      if (localClusters && Array.isArray(localClusters.features)) {
+        clusterFeatures = localClusters.features.filter((feature) => (
+          feature.geometry && ["Polygon", "MultiPolygon"].includes(feature.geometry.type)
+        ));
+        return Promise.resolve(clusterFeatures);
+      }
+      if (!clusterPromise) {
+        clusterPromise = loadLayer("traffic:hotspot_polygons")
+          .catch(() => loadLayer("traffic:dbscan_clusters"))
+          .then((features) => {
+          clusterFeatures = features.filter((feature) => (
+            feature.geometry && ["Polygon", "MultiPolygon"].includes(feature.geometry.type)
+          ));
+          return clusterFeatures;
+        }).catch((error) => {
+          clusterPromise = null;
+          console.warn("DBSCAN clusters could not be loaded; hotspot alerts remain available.", error);
+          clusterFeatures = [];
+          return clusterFeatures;
+        });
+      }
+      return clusterPromise;
+    }
+
+    function loadRoute() {
+      if (routeCoordinates) return Promise.resolve(routeCoordinates);
+      if (!routePromise) {
+        const localRoads = root.TrafficRoadCorridor;
+        const roadFeatures = localRoads && Array.isArray(localRoads.features)
+          ? localRoads.features : null;
+        const source = roadFeatures && roadFeatures.length
+          ? Promise.resolve(roadFeatures) : loadLayer("traffic:road_corridor");
+        routePromise = source.then((features) => {
+          const roadKey = (feature) => {
+            const properties = feature.properties || {};
+            return `${properties.road_class || ""} ${properties.ref || ""} ${properties.name || ""}`
+              .toLowerCase().replace(/[^a-z0-9]+/g, "");
+          };
+          const nh66 = features.find((feature) => (
+            roadKey(feature).includes("nh66") || roadKey(feature).includes("nationalhighway66")
+          ));
+          const duk = features.find((feature) => (
+            roadKey(feature).includes("dukaccessroad")
+            || (roadKey(feature).includes("digitaluniversitykerala") && roadKey(feature).includes("access"))
+          ));
+          if (!nh66 || !duk) {
+            const available = features.map((feature) => (feature.properties || {}).road_class || "unnamed road").join(", ");
+            throw new Error(`Could not identify both mapped roads. GeoServer returned: ${available || "no road features"}.`);
+          }
+
+          function lineCoordinates(feature, roadName) {
+            const geometryType = feature.geometry && feature.geometry.type;
+            let parts = geometryType === "LineString" ? [feature.geometry.coordinates]
+              : geometryType === "MultiLineString" ? feature.geometry.coordinates : [];
+            parts = parts.filter((line) => Array.isArray(line) && line.length >= 2)
+              .map((line) => line.map((point) => [...point]));
+            if (!parts.length) throw new Error(`${roadName} has no line geometry in GeoServer.`);
+
+            let merged = parts.shift();
+            while (parts.length) {
+              let best = null;
+              parts.forEach((part, index) => {
+                const reversed = [...part].reverse();
+                const options = [
+                  { gap: haversineMeters(merged[merged.length - 1], part[0]), index, points: part.slice(1), prepend: false },
+                  { gap: haversineMeters(merged[merged.length - 1], part[part.length - 1]), index, points: reversed.slice(1), prepend: false },
+                  { gap: haversineMeters(merged[0], part[part.length - 1]), index, points: part.slice(0, -1), prepend: true },
+                  { gap: haversineMeters(merged[0], part[0]), index, points: reversed.slice(0, -1), prepend: true },
+                ];
+                options.forEach((option) => { if (!best || option.gap < best.gap) best = option; });
+              });
+              if (!best || best.gap > 25) {
+                throw new Error(`${roadName} has disconnected MultiLineString sections (${Math.round(best ? best.gap : Infinity)} m gap).`);
+              }
+              const [part] = parts.splice(best.index, 1);
+              if (best.prepend) merged = [...best.points, ...merged];
+              else merged = [...merged, ...best.points];
+            }
+            return merged;
+          }
+
+          const first = lineCoordinates(nh66, "NH 66");
+          const second = lineCoordinates(duk, "DUK access road");
+          const options = [
+            [first, second], [first, [...second].reverse()],
+            [[...first].reverse(), second], [[...first].reverse(), [...second].reverse()],
+          ];
+          options.sort((a, b) => (
+            haversineMeters(a[0][a[0].length - 1], a[1][0])
+            - haversineMeters(b[0][b[0].length - 1], b[1][0])
+          ));
+          const [mainRoad, accessRoad] = options[0];
+          if (haversineMeters(mainRoad[mainRoad.length - 1], accessRoad[0]) > 25) {
+            throw new Error("The mapped study roads do not connect to form a simulation route.");
+          }
+          routeCoordinates = [...mainRoad, ...accessRoad.slice(1)];
+          let cumulative = 0;
+          routeSegments = [];
+          for (let index = 0; index < routeCoordinates.length - 1; index += 1) {
+            const start = routeCoordinates[index];
+            const end = routeCoordinates[index + 1];
+            const length = haversineMeters(start, end);
+            routeSegments.push({ start, end, length, cumulative });
+            cumulative += length;
+          }
+          routeLength = cumulative;
+          if (routeLength <= 0) throw new Error("The mapped route has no usable length.");
+          return routeCoordinates;
+        }).catch((error) => {
+          routePromise = null;
+          throw error;
+        });
+      }
+      return routePromise;
+    }
+
+    function pointAtProgress(distance, offset = 0) {
+      const progress = Math.max(0, Math.min(routeLength, distance));
+      const segment = routeSegments.find((item) => progress <= item.cumulative + item.length)
+        || routeSegments[routeSegments.length - 1];
+      const fraction = segment.length === 0 ? 0
+        : Math.max(0, Math.min(1, (progress - segment.cumulative) / segment.length));
+      const longitude = segment.start[0] + (segment.end[0] - segment.start[0]) * fraction;
+      const latitude = segment.start[1] + (segment.end[1] - segment.start[1]) * fraction;
+      const latitudeScale = EARTH_RADIUS_METERS * Math.PI / 180;
+      const longitudeScale = latitudeScale * Math.cos(latitude * Math.PI / 180);
+      const east = (segment.end[0] - segment.start[0]) * longitudeScale;
+      const north = (segment.end[1] - segment.start[1]) * latitudeScale;
+      const segmentLength = Math.hypot(east, north) || 1;
+      const shiftedLongitude = longitude + (-north / segmentLength * offset) / longitudeScale;
+      const shiftedLatitude = latitude + (east / segmentLength * offset) / latitudeScale;
+      return {
+        latlng: L.latLng(shiftedLatitude, shiftedLongitude),
+        bearing: Math.atan2(east, north) * 180 / Math.PI,
+      };
+    }
+
+    function closestRoutePosition(latlng) {
+      const target = map.latLngToLayerPoint(latlng);
+      let closest = null;
+      routeSegments.forEach((segment) => {
+        const start = map.latLngToLayerPoint([segment.start[1], segment.start[0]]);
+        const end = map.latLngToLayerPoint([segment.end[1], segment.end[0]]);
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const lengthSquared = dx * dx + dy * dy;
+        const fraction = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1,
+          ((target.x - start.x) * dx + (target.y - start.y) * dy) / lengthSquared));
+        const x = start.x + fraction * dx;
+        const y = start.y + fraction * dy;
+        const distanceSquared = (target.x - x) ** 2 + (target.y - y) ** 2;
+        if (!closest || distanceSquared < closest.distanceSquared) {
+          closest = {
+            distanceSquared,
+            progress: segment.cumulative + segment.length * fraction,
+          };
+        }
+      });
+      return closest ? closest.progress : 0;
+    }
+
+    function announce(feature, source = "hotspot") {
+      const message = source === "approach" ? CLUSTER_APPROACH_ALERT
+        : (source === "cluster" ? CLUSTER_ALERTS : ALERTS)[riskClass(feature)];
+      if (!message) return;
+      elements.alert.textContent = message;
+      if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) {
+        setState("Simulation active. Voice playback is not supported in this browser.");
+        return;
+      }
+      const utterance = new root.SpeechSynthesisUtterance(message);
+      utterance.lang = "en-IN";
+      utterance.onstart = () => {
+        if (enabled) setState("Simulation active. Voice alert is playing.");
+      };
+      utterance.onerror = (event) => {
+        if (!enabled) return;
+        const detail = event.error === "canceled" || event.error === "interrupted"
+          ? "Voice alert was cancelled." : "The browser could not play the voice alert.";
+        setState(`Simulation active. ${detail}`);
+      };
+      try {
+        root.speechSynthesis.speak(utterance);
+      } catch (error) {
+        setState("Simulation active. The browser could not start the voice alert.");
+        console.error("Demo vehicle speech synthesis failed:", error);
+      }
+    }
+
+    function updateHotspots(latlng) {
+      const transition = geometry.hotspotTransitions(
+        hotspotFeatures,
+        activeHotspotIds,
+        latlng.lng,
+        latlng.lat,
+        WARNING_BUFFER_METERS,
+      );
+      activeHotspotIds = transition.activeIds;
+      const suppress = suppressAlertsOnce;
+      suppressAlertsOnce = false;
+
+      const activeFeatures = hotspotFeatures.filter((feature, index) => (
+        activeHotspotIds.has(geometry.featureId(feature, index))
+      ));
+      activeFeatures.sort((a, b) => riskRank(b) - riskRank(a));
+      const currentRisk = activeFeatures[0];
+      elements.hotspot.textContent = currentRisk
+        ? RISK_LABEL[riskClass(currentRisk)] || "Outside hotspot"
+        : "Outside hotspot";
+
+      const pointInRing = (longitude, latitude, ring) => {
+        let inside = false;
+        for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
+          const [x1, y1] = ring[index];
+          const [x2, y2] = ring[previous];
+          const crosses = ((y1 > latitude) !== (y2 > latitude))
+            && longitude < ((x2 - x1) * (latitude - y1)) / (y2 - y1) + x1;
+          if (crosses) inside = !inside;
+        }
+        return inside;
+      };
+      const inPolygon = (longitude, latitude, polygon) => (
+        pointInRing(longitude, latitude, polygon[0])
+        && !polygon.slice(1).some((ring) => pointInRing(longitude, latitude, ring))
+      );
+      const inGeometry = (longitude, latitude, value) => {
+        if (!value) return false;
+        if (value.type === "Polygon") return inPolygon(longitude, latitude, value.coordinates);
+        if (value.type === "MultiPolygon") return value.coordinates.some((polygon) => (
+          inPolygon(longitude, latitude, polygon)
+        ));
+        return false;
+      };
+      const segmentDistanceMeters = (longitude, latitude, first, second) => {
+        const radians = Math.PI / 180;
+        const latitudeScale = EARTH_RADIUS_METERS * radians;
+        const longitudeScale = latitudeScale * Math.cos(latitude * radians);
+        const ax = (first[0] - longitude) * longitudeScale;
+        const ay = (first[1] - latitude) * latitudeScale;
+        const bx = (second[0] - longitude) * longitudeScale;
+        const by = (second[1] - latitude) * latitudeScale;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const lengthSquared = dx * dx + dy * dy;
+        const fraction = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1,
+          -(ax * dx + ay * dy) / lengthSquared));
+        return Math.hypot(ax + fraction * dx, ay + fraction * dy);
+      };
+      const distanceToGeometryMeters = (longitude, latitude, value) => {
+        if (inGeometry(longitude, latitude, value)) return 0;
+        const polygons = value.type === "Polygon" ? [value.coordinates]
+          : value.type === "MultiPolygon" ? value.coordinates : [];
+        let distance = Infinity;
+        polygons.forEach((polygon) => polygon.forEach((ring) => {
+          for (let index = 0; index < ring.length; index += 1) {
+            distance = Math.min(distance, segmentDistanceMeters(
+              longitude, latitude, ring[index], ring[(index + 1) % ring.length],
+            ));
+          }
+        }));
+        return distance;
+      };
+      const clustersNow = new Set();
+      const enteredClusters = [];
+      clusterFeatures.forEach((feature) => {
+        const id = String((feature.properties || {}).Cluster_ID || feature.id || "");
+        const inside = inGeometry(latlng.lng, latlng.lat, feature.geometry);
+        const distance = distanceToGeometryMeters(latlng.lng, latlng.lat, feature.geometry);
+        if (inside) {
+          clustersNow.add(id);
+          if (!activeClusterIds.has(id)) enteredClusters.push(feature);
+        } else if (distance <= CLUSTER_APPROACH_DISTANCE_METERS) {
+          if (!approachAlertedClusterIds.has(id)) {
+            approachAlertedClusterIds.add(id);
+            if (!suppress) announce(null, "approach");
+          }
+        } else if (distance > CLUSTER_APPROACH_DISTANCE_METERS * 2) {
+          approachAlertedClusterIds.delete(id);
+        }
+      });
+      activeClusterIds = clustersNow;
+
+      if (enteredClusters.length > 0) {
+        const cluster = enteredClusters[0];
+        const properties = cluster.properties || {};
+        const clusterId = Number(properties.Cluster_ID);
+        const linkedHotspot = hotspotFeatures.find((feature) => (
+          Number((feature.properties || {}).DBSCAN_Cluster_ID
+            ?? (feature.properties || {}).DBSCAN_ID) === clusterId
+        ));
+        const clusterClass = linkedHotspot ? riskClass(linkedHotspot)
+          : Number(properties.Fatal_Count ?? properties.Fatal_Cnt ?? 0) > 0
+            || Number(properties.Total_Deaths ?? properties.Deaths_T ?? 0) > 0 ? "RED"
+            : Number(properties.Major_Count ?? properties.Major_Cnt ?? 0) > 0 ? "ORANGE" : "GREEN";
+        elements.hotspot.textContent = `${RISK_LABEL[clusterClass] || "Accident"} · DBSCAN cluster`;
+        if (!suppress) announce({ properties: { Severity_Class: clusterClass } }, "cluster");
+      }
+    }
+
+    function updateVehicle(distance = routeProgress, offset = lateralOffset) {
+      routeProgress = Math.max(0, Math.min(routeLength, distance));
+      lateralOffset = Math.max(-6, Math.min(6, offset));
+      const position = pointAtProgress(routeProgress, lateralOffset);
+      if (vehicleMarker) {
+        vehicleMarker.setLatLng(position.latlng);
+        const icon = vehicleMarker.getElement()?.querySelector(".demo-vehicle-icon");
+        if (icon) icon.style.transform = `rotate(${position.bearing + 180}deg)`;
+      }
+      elements.position.textContent = `Vehicle position: ${position.latlng.lat.toFixed(6)}, ${position.latlng.lng.toFixed(6)}`;
+      updateHotspots(position.latlng);
+    }
+
+    function createVehicle() {
+      if (vehicleMarker) return;
+      const firstPosition = pointAtProgress(0);
+      map.panTo(firstPosition.latlng);
+      vehicleMarker = L.marker(firstPosition.latlng, {
+        pane: "gpsPane",
+        draggable: true,
+        autoPan: true,
+        icon: L.divIcon({
+          className: "demo-vehicle-marker",
+          html: '<span class="demo-vehicle-icon" aria-hidden="true">🚗</span>',
+          iconSize: [30, 30],
+          iconAnchor: [15, 15],
+        }),
+        title: "Demo vehicle. Drag to reposition on the road.",
+      }).addTo(map);
+      vehicleMarker.bindTooltip("Demo vehicle");
+      vehicleMarker.on("dragstart", () => pause());
+      vehicleMarker.on("drag", (event) => {
+        routeProgress = closestRoutePosition(event.target.getLatLng());
+        lateralOffset = 0;
+        updateVehicle(routeProgress, lateralOffset);
+      });
+      vehicleMarker.on("dragend", () => updateVehicle());
+      suppressAlertsOnce = true;
+      updateVehicle(0, 0);
+    }
+
+    function setButtonsReady(ready) {
+      elements.start.disabled = !ready;
+      elements.pause.disabled = !ready;
+      elements.reset.disabled = !ready;
+    }
+
+    function enable() {
+      if (enabled) return;
+      if (root.TrafficGpsTracking && root.TrafficGpsTracking.isRunning()) {
+        setState("Stop live GPS tracking before starting the demo simulation.");
+        return;
+      }
+      enabled = true;
+      elements.toggle.setAttribute("aria-pressed", "true");
+      elements.toggle.textContent = "Demo Simulation: On";
+      setButtonsReady(false);
+      setState("Loading the mapped road route and hotspots…");
+      Promise.all([loadRoute(), loadHotspots(), loadClusters()]).then(() => {
+        if (!enabled) return;
+        routeProgress = 0;
+        lateralOffset = 0;
+        activeHotspotIds = new Set();
+        activeClusterIds = new Set();
+        approachAlertedClusterIds = new Set();
+        createVehicle();
+        setButtonsReady(true);
+        setState("Simulation ready. Press Start Simulation or use the keyboard.");
+      }).catch((error) => {
+        if (!enabled) return;
+        disable();
+        setState(`Simulation could not load its route or hotspots. ${error.message}`);
+        console.error("Demo vehicle data could not be loaded:", error);
+      });
+    }
+
+    function disable() {
+      pause();
+      enabled = false;
+      elements.toggle.setAttribute("aria-pressed", "false");
+      elements.toggle.textContent = "Demo Simulation: Off";
+      setButtonsReady(false);
+      pressedKeys.clear();
+      activeHotspotIds = new Set();
+      activeClusterIds = new Set();
+      approachAlertedClusterIds = new Set();
+      if (vehicleMarker) map.removeLayer(vehicleMarker);
+      vehicleMarker = null;
+      elements.position.textContent = "Vehicle position: not available";
+      elements.hotspot.textContent = "Outside hotspot";
+      elements.alert.textContent = "No demo alert yet.";
+      setState("Simulation is off.");
+    }
+
+    function pause() {
+      running = false;
+      autoDrive = false;
+      pressedKeys.clear();
+      if (frameId !== null) cancelAnimationFrame(frameId);
+      frameId = null;
+      if (enabled && routeCoordinates) setState("Simulation paused.");
+    }
+
+    function frame(timestamp) {
+      if (!running) return;
+      const deltaSeconds = Math.min((timestamp - lastFrameTime) / 1000, 0.1);
+      lastFrameTime = timestamp;
+      let forward = autoDrive ? 1 : 0;
+      let sideways = 0;
+      if (!autoDrive) {
+        if (pressedKeys.has("forward")) forward += 1;
+        if (pressedKeys.has("backward")) forward -= 1;
+        if (pressedKeys.has("left")) sideways += 1;
+        if (pressedKeys.has("right")) sideways -= 1;
+      }
+      updateVehicle(routeProgress + forward * 14 * deltaSeconds,
+        lateralOffset + sideways * 3 * deltaSeconds);
+
+      if (autoDrive && routeProgress >= routeLength) {
+        pause();
+        setState("Route end reached. Reset the vehicle to run the demo again.");
+        return;
+      }
+      frameId = requestAnimationFrame(frame);
+    }
+
+    function run(auto = false) {
+      if (!enabled || !routeCoordinates || running) return;
+      if (auto && routeProgress >= routeLength) {
+        setState("Route end reached. Reset the vehicle to run the demo again.");
+        return;
+      }
+      running = true;
+      autoDrive = auto;
+      if (auto) pressedKeys.clear();
+      lastFrameTime = performance.now();
+      setState(auto ? "Simulation running. Use the keyboard to steer." : "Vehicle moving by keyboard.");
+      frameId = requestAnimationFrame(frame);
+    }
+
+    function reset() {
+      if (!enabled || !routeCoordinates) return;
+      pause();
+      activeHotspotIds = new Set();
+      activeClusterIds = new Set();
+      approachAlertedClusterIds = new Set();
+      elements.alert.textContent = "No demo alert yet.";
+      routeProgress = 0;
+      lateralOffset = 0;
+      suppressAlertsOnce = true;
+      updateVehicle(0, 0);
+      setState("Vehicle reset to the start of the mapped route.");
+    }
+
+    function keyAction(event) {
+      const target = event.target;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(target.tagName))) return null;
+      const key = ({
+        ArrowUp: "forward", KeyW: "forward",
+        ArrowDown: "backward", KeyS: "backward",
+        ArrowLeft: "left", KeyA: "left",
+        ArrowRight: "right", KeyD: "right",
+      })[event.code];
+      return key || null;
+    }
+
+    document.addEventListener("keydown", (event) => {
+      if (!enabled || !routeCoordinates) return;
+      const action = keyAction(event);
+      if (!action) return;
+      event.preventDefault();
+      pressedKeys.add(action);
+      if (!running) run(false);
+      else if (autoDrive) {
+        autoDrive = false;
+        setState("Simulation running by keyboard.");
+      }
+    });
+
+    document.addEventListener("keyup", (event) => {
+      const action = keyAction(event);
+      if (!action || !pressedKeys.has(action)) return;
+      pressedKeys.delete(action);
+      if (pressedKeys.size === 0 && running && !autoDrive) pause();
+    });
+
+    window.addEventListener("blur", () => {
+      if (running && !autoDrive) pause();
+    });
+
+    elements.toggle.addEventListener("click", () => (enabled ? disable() : enable()));
+    elements.start.addEventListener("click", () => run(true));
+    elements.pause.addEventListener("click", pause);
+    elements.reset.addEventListener("click", reset);
+    return Object.freeze({ disable, isEnabled: () => enabled });
+  }
+
+  root.TrafficVehicleSimulation = Object.freeze({ initialize });
+}(window));

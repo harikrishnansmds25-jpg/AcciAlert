@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173a5e">
+  <title>AcciAlert</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"
+    crossorigin="anonymous"
+  >
+  <link rel="stylesheet" href="css/styles.css">
+  <script
+    defer
+    src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
+    crossorigin="anonymous"
+  ></script>
+  <script defer src="js/config.js"></script>
+  <script defer src="js/hotspot-geometry.js"></script>
+  <script defer src="js/dbscan-clusters.js"></script>
+  <script defer src="js/accident-points.js"></script>
+  <script defer src="js/road-corridor.js"></script>
+  <script defer src="js/hotspot-points.js"></script>
+  <script defer src="js/vehicle-simulation.js"></script>
+  <script defer src="js/gps-tracking.js"></script>
+  <script defer src="js/app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-content">
+      <p class="eyebrow">Web GIS</p>
+      <h1>AcciAlert</h1>
+      <p class="subtitle">Know the Risk Before You Reach</p>
+    </div>
+  </header>
+
+  <main class="map-main">
+    <section class="map-panel" aria-label="Interactive study area map">
+      <div id="map" role="application" aria-label="Map centered on the Mangalapuram-DUK corridor"></div>
+      <p id="map-status" class="map-status" role="status" aria-live="polite">Loading map...</p>
+      <details class="gps-controls" aria-label="Live GPS tracking">
+        <summary>Live GPS tracking</summary>
+        <div class="gps-controls__buttons">
+          <button id="gps-start" type="button">Start GPS Tracking</button>
+          <button id="gps-stop" type="button" disabled>Stop GPS</button>
+          <button id="voice-toggle" type="button" aria-pressed="false">Voice alerts: Off</button>
+        </div>
+        <p id="gps-status" role="status" aria-live="polite">GPS is off.</p>
+        <p id="voice-status" role="status" aria-live="polite">Voice alerts are off.</p>
+        <p id="gps-coordinates">Position: not available</p>
+        <p id="gps-hotspot-state">Hotspot state: not available</p>
+        <p id="gps-fix-time">Last fix: not available</p>
+        <button id="gps-recenter" type="button" hidden>Recenter on me</button>
+      </details>
+      <details class="simulation-controls" aria-label="Demo vehicle simulation">
+        <summary>Demo vehicle simulation</summary>
+        <div class="simulation-controls__buttons">
+          <button id="simulation-toggle" type="button" aria-pressed="false">Demo Simulation: Off</button>
+          <button id="simulation-start" type="button" disabled>Start Simulation</button>
+          <button id="simulation-pause" type="button" disabled>Pause Simulation</button>
+          <button id="simulation-reset" type="button" disabled>Reset Vehicle</button>
+        </div>
+        <p id="simulation-state" role="status" aria-live="polite">Simulation is off.</p>
+        <p id="vehicle-position">Vehicle position: not available</p>
+        <p id="vehicle-hotspot-status">Outside hotspot</p>
+        <p id="vehicle-alert" role="status" aria-live="polite">No demo alert yet.</p>
+        <p class="simulation-help">Start drives forward. Use ↑/W to move forward, ↓/S backward, ←/A left, →/D right. Drag the vehicle to reposition it on the road.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>Demonstration only: all accident records in this project are synthetic.</p>
+  </footer>
+</body>
+</html>

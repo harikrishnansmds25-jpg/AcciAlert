@@ -1,0 +1,46 @@
+{
+  "type": "FeatureCollection",
+  "name": "DUK Access Road OpenStreetMap reference",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "road_class": "DUK Access Road",
+        "name": "Digital University Kerala access road",
+        "highway": "residential",
+        "osm_way_id": "802362018",
+        "source": "OpenStreetMap contributors",
+        "source_url": "https://www.openstreetmap.org/way/802362018",
+        "junction_way_id": "805241725",
+        "junction_source_url": "https://www.openstreetmap.org/way/805241725",
+        "retrieved": "2026-11-06",
+        "attribution": "© OpenStreetMap contributors, ODbL 1.0; mapped road, not surveyed or authoritative centreline",
+        "note": "OSM-mapped residential access road from NH 66 to the road endpoint beside the Digital University Kerala campus. A short connector joins the OSM road node to the NH 66 centreline."
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [76.8501150, 8.6186208],
+          [76.8504314, 8.6177535],
+          [76.8505119, 8.6175573],
+          [76.8506192, 8.6173929],
+          [76.8507238, 8.6172629],
+          [76.8509516, 8.6170742],
+          [76.8510431, 8.6170175],
+          [76.8511398, 8.6169565],
+          [76.8513633, 8.6168156],
+          [76.8514075, 8.6167877],
+          [76.8518044, 8.6165703],
+          [76.8519385, 8.6164536],
+          [76.8520726, 8.6161937]
+        ]
+      }
+    }
+  ]
+}
