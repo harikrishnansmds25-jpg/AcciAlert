@@ -203,14 +203,38 @@ h1 {
   background: transparent;
 }
 
-.gps-position-marker span {
-  display: block;
-  width: 18px;
-  height: 18px;
-  border: 3px solid #fff;
+.gps-vehicle-marker {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  transition: transform 0.2s ease-out;
+}
+
+.gps-vehicle-radar {
+  position: absolute;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
-  background: #1267d6;
-  box-shadow: 0 0 0 5px rgb(18 103 214 / 20%), 0 1px 5px rgb(0 0 0 / 45%);
+  background: rgba(2, 132, 199, 0.2);
+  border: 1.5px solid rgba(2, 132, 199, 0.5);
+  animation: gps-radar-pulse 2s infinite ease-out;
+  pointer-events: none;
+}
+
+@keyframes gps-radar-pulse {
+  0% { transform: scale(0.6); opacity: 0.9; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+.gps-vehicle-svg {
+  display: block;
+  width: 36px;
+  height: 36px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
 }
 
 .gps-controls p {

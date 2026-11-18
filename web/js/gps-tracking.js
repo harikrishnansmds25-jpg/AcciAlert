@@ -194,7 +194,9 @@
       window.setTimeout(() => { mapMoveIsProgrammatic = false; }, 0);
     }
 
-    function ensureGpsLayers(latlng, accuracy) {
+    const vehicleIconHtml = '<div class="gps-vehicle-marker"><div class="gps-vehicle-radar"></div><svg class="gps-vehicle-svg" viewBox="0 0 36 36" width="36" height="36" xmlns="http://www.w3.org/2000/svg"><defs><filter id="v-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.4"/></filter></defs><rect x="5" y="7" width="4" height="7" rx="1.5" fill="#1e293b"/><rect x="27" y="7" width="4" height="7" rx="1.5" fill="#1e293b"/><rect x="5" y="22" width="4" height="7" rx="1.5" fill="#1e293b"/><rect x="27" y="22" width="4" height="7" rx="1.5" fill="#1e293b"/><path d="M10 5 C10 3, 26 3, 26 5 L29 14 C30 18, 30 25, 28 30 C26 33, 10 33, 8 30 C6 25, 6 18, 7 14 Z" fill="#0284c7" stroke="#ffffff" stroke-width="2" filter="url(#v-shadow)"/><path d="M11 10 L25 10 L26 15 L10 15 Z" fill="#e0f2fe"/><rect x="11" y="16" width="14" height="7" rx="2" fill="#0369a1"/><circle cx="18" cy="19.5" r="1.8" fill="#38bdf8"/><path d="M12 24 L24 24 L25 27 L11 27 Z" fill="#bae6fd"/><ellipse cx="11" cy="5" rx="2" ry="1.2" fill="#fef08a"/><ellipse cx="25" cy="5" rx="2" ry="1.2" fill="#fef08a"/><rect x="9.5" y="31" width="3.5" height="1.5" rx="0.5" fill="#ef4444"/><rect x="23" y="31" width="3.5" height="1.5" rx="0.5" fill="#ef4444"/></svg></div>';
+
+    function ensureGpsLayers(latlng, accuracy, heading) {
       if (!accuracyCircle) {
         accuracyCircle = L.circle(latlng, {
           pane: "gpsPane", radius: accuracy, color: "#1267d6", weight: 1,
@@ -204,10 +206,17 @@
       if (!marker) {
         marker = L.marker(latlng, {
           pane: "gpsPane", keyboard: false, interactive: false,
-          icon: L.divIcon({ className: "gps-position-marker", html: "<span></span>", iconSize: [22, 22], iconAnchor: [11, 11] }),
+          icon: L.divIcon({ className: "gps-position-marker", html: vehicleIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }),
         }).addTo(map);
-        marker.bindTooltip("Live device GPS position");
-      } else { marker.setLatLng(latlng); }
+        marker.bindTooltip("Live vehicle tracking");
+      } else {
+        marker.setLatLng(latlng);
+      }
+      if (marker && heading !== null && heading !== undefined && !isNaN(heading)) {
+        const el = marker.getElement();
+        const vEl = el && el.querySelector(".gps-vehicle-marker");
+        if (vEl) vEl.style.transform = `rotate(${heading}deg)`;
+      }
     }
 
     function updateZone(longitude, latitude) {
@@ -254,7 +263,7 @@
       lastPosition = position;
       const { latitude, longitude, accuracy } = position.coords;
       const latlng = L.latLng(latitude, longitude);
-      ensureGpsLayers(latlng, accuracy);
+      ensureGpsLayers(latlng, accuracy, position.coords.heading);
       setMapFollow(latlng, !hasCentered);
       hasCentered = true;
       if (coordinates) coordinates.textContent = `Position: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (accuracy ±${Math.round(accuracy)} m)`;
