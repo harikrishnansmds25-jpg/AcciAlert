@@ -116,6 +116,51 @@ h1 {
   color: #8a2020;
 }
 
+.speedometer {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  z-index: 1002;
+  width: 178px;
+  padding: 12px 14px;
+  transform: translateY(-50%);
+  border: 1px solid #cbd5df;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 97%);
+  box-shadow: 0 3px 12px rgb(24 44 64 / 20%);
+  color: #173a5e;
+  font-variant-numeric: tabular-nums;
+}
+
+.speedometer__heading {
+  margin: 0 0 2px;
+  color: #526170;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.speedometer__reading {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 56px;
+}
+
+.speedometer__reading #speedometer-value {
+  font-size: 2.6rem;
+  font-weight: 750;
+  line-height: 1.15;
+}
+
+.speedometer__unit { color: #526170; font-size: 0.82rem; font-weight: 700; }
+.speedometer__meta { display: flex; justify-content: space-between; gap: 8px; margin: 5px 0 0; font-size: 0.72rem; }
+.speedometer__meta span { color: #64748b; }
+.speedometer__meta strong { text-align: right; }
+.speedometer[data-status="moving"] #speedometer-value { color: #087443; }
+.speedometer[data-status="unavailable"] #speedometer-value { color: #64748b; }
+
 .gps-controls {
   position: absolute;
   top: 12px;
@@ -344,6 +389,20 @@ h1 {
   font-size: 0.72rem;
 }
 
+.speed-alert-card {
+  display: grid;
+  gap: 3px;
+  margin: 10px 0;
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #f8fafc;
+  font-size: 0.88rem;
+}
+
+.speed-status { color: #15803d; font-weight: 700; }
+.speed-status.is-over { color: #b91c1c; }
+
 .demo-vehicle-marker {
   border: 0;
   background: transparent;
@@ -470,6 +529,18 @@ h1 {
     left: 8px;
     max-width: calc(100% - 16px);
   }
+
+  .speedometer {
+    top: auto;
+    right: 8px;
+    bottom: 8px;
+    width: 150px;
+    padding: 9px 11px;
+    transform: none;
+  }
+
+  .speedometer__reading { min-height: 46px; }
+  .speedometer__reading #speedometer-value { font-size: 2.15rem; }
 
   .gps-controls p {
     max-width: min(300px, calc(100vw - 48px));

@@ -40,6 +40,12 @@
     <section class="map-panel" aria-label="Interactive study area map">
       <div id="map" role="application" aria-label="Map centered on the Mangalapuram-DUK corridor"></div>
       <p id="map-status" class="map-status" role="status" aria-live="polite">Loading map...</p>
+      <section id="speedometer" class="speedometer" aria-label="Live vehicle speedometer" data-status="stopped" aria-live="polite">
+        <p class="speedometer__heading">Current speed</p>
+        <div class="speedometer__reading"><span id="speedometer-value">--</span><span class="speedometer__unit">km/h</span></div>
+        <p class="speedometer__meta"><span>Mode</span><strong id="speedometer-mode">No active mode</strong></p>
+        <p class="speedometer__meta"><span>Status</span><strong id="speedometer-status">Stopped</strong></p>
+      </section>
       <details class="gps-controls" aria-label="Live GPS tracking">
         <summary>Live GPS tracking</summary>
         <div class="gps-controls__buttons">
@@ -51,6 +57,14 @@
         <p id="voice-status" role="status" aria-live="polite">Voice alerts are off.</p>
         <p id="gps-coordinates">Position: not available</p>
         <p id="gps-hotspot-state">Hotspot state: not available</p>
+        <div class="speed-alert-card" aria-live="polite">
+          <strong>Speed alert</strong>
+          <span id="gps-speed">Current speed: unavailable</span>
+          <span id="gps-hotspot-detail">Approaching hotspot: —</span>
+          <span id="gps-risk-detail">Risk level: —</span>
+          <span id="gps-recommended-speed">Recommended speed: —</span>
+          <span id="gps-speed-status" class="speed-status">Speed status: —</span>
+        </div>
         <p id="gps-fix-time">Last fix: not available</p>
         <button id="gps-recenter" type="button" hidden>Recenter on me</button>
       </details>
@@ -65,6 +79,14 @@
         <p id="simulation-state" role="status" aria-live="polite">Simulation is off.</p>
         <p id="vehicle-position">Vehicle position: not available</p>
         <p id="vehicle-hotspot-status">Outside hotspot</p>
+        <div class="speed-alert-card" aria-live="polite">
+          <strong>Speed alert</strong>
+          <span id="vehicle-speed">Current speed: unavailable</span>
+          <span id="vehicle-hotspot-detail">Approaching hotspot: —</span>
+          <span id="vehicle-risk-detail">Risk level: —</span>
+          <span id="vehicle-recommended-speed">Recommended speed: —</span>
+          <span id="vehicle-speed-status" class="speed-status">Speed status: —</span>
+        </div>
         <p id="vehicle-alert" role="status" aria-live="polite">No demo alert yet.</p>
         <p class="simulation-help">Start drives forward. Use ↑/W to move forward, ↓/S backward, ←/A left, →/D right. Drag the vehicle to reposition it on the road.</p>
       </details>

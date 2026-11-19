@@ -8,12 +8,7 @@
   const MIN_SPEECH_GAP_MS = 1200;
   const RISK_RANK = Object.freeze({ GREEN: 1, ORANGE: 2, RED: 3 });
   const RISK_LABEL = Object.freeze({ GREEN: "Low", ORANGE: "Medium", RED: "High" });
-  const ALERT_TEXT = Object.freeze({
-    APPROACH: "Careful! Accident hotspot ahead. Please slow down.",
-    GREEN: "Careful! Accident hotspot ahead. Please slow down.",
-    ORANGE: "Attention! Accident hotspot ahead. Drive carefully.",
-    RED: "Warning! High-risk accident hotspot ahead. Reduce your speed!",
-  });
+  const speedAlerts = root.TrafficSpeedAlerts;
 
   function featureRisk(feature) {
     const properties = feature.properties || {};
@@ -57,6 +52,10 @@
     const coordinates = el("gps-coordinates");
     const hotspotState = el("gps-hotspot-state");
     const fixTime = el("gps-fix-time");
+    const speedElements = {
+      speed: el("gps-speed"), id: el("gps-hotspot-detail"), risk: el("gps-risk-detail"),
+      recommendation: el("gps-recommended-speed"), status: el("gps-speed-status"),
+    };
     if (!map || !geometry || !startButton || !stopButton) return;
 
     let watchId = null;
@@ -68,6 +67,7 @@
     let marker = null;
     let accuracyCircle = null;
     let lastPosition = null;
+    let currentSpeedKmh = null;
     let current = { state: "outside", id: null };
     let lastSpokenAt = 0;
     let speechQueue = [];
@@ -77,6 +77,23 @@
     let mapMoveIsProgrammatic = false;
 
     const setStatus = (message) => { if (status) status.textContent = message; };
+
+    function renderSpeed(feature) {
+      const evaluation = feature && speedAlerts ? speedAlerts.evaluate(feature, currentSpeedKmh) : null;
+      if (speedElements.speed) speedElements.speed.textContent = `Current speed: ${currentSpeedKmh === null ? "unavailable" : `${Math.round(currentSpeedKmh)} km/h`}`;
+      if (speedElements.id) speedElements.id.textContent = `Approaching hotspot: ${evaluation ? evaluation.id : "—"}`;
+      if (speedElements.risk) speedElements.risk.textContent = `Risk level: ${evaluation ? evaluation.risk : "—"}`;
+      if (speedElements.recommendation) speedElements.recommendation.textContent = `Recommended speed: ${evaluation && evaluation.recommendation ? `${evaluation.recommendation} km/h` : "—"}`;
+      if (speedElements.status) {
+        speedElements.status.textContent = `Speed status: ${evaluation && evaluation.recommendation ? evaluation.status : "—"}`;
+        speedElements.status.classList.toggle("is-over", Boolean(evaluation && evaluation.above));
+      }
+      if (root.TrafficSpeedometer && running) {
+        const state = currentSpeedKmh === null ? "Unavailable" : currentSpeedKmh > 0 ? "Moving" : "Stopped";
+        root.TrafficSpeedometer.update("GPS", currentSpeedKmh, state);
+      }
+      return evaluation;
+    }
 
     function loadClusters() {
       if (features) return Promise.resolve(features);
@@ -222,6 +239,7 @@
     function updateZone(longitude, latitude) {
       if (!features) return;
       const next = classifyPosition(features, geometry, longitude, latitude);
+      const evaluation = renderSpeed(next.state === "outside" ? null : next.feature);
       const previous = current;
       if (previous.id && previous.state !== "outside") {
         const previousFeature = features.find((feature, index) => featureKey(feature, index) === previous.id);
@@ -233,11 +251,13 @@
               current = next;
             } else {
               current = { state: "inside", id: previous.id, feature: previousFeature, risk: featureRisk(previousFeature) };
+              renderSpeed(previousFeature);
               if (hotspotState) hotspotState.textContent = `Hotspot state: Inside ${RISK_LABEL[current.risk]} risk DBSCAN cluster ${current.id}`;
               return;
             }
           } else if (distance <= APPROACH_METERS + EXIT_HYSTERESIS_METERS && next.state === "outside") {
             current = { state: "approaching", id: previous.id, feature: previousFeature, risk: featureRisk(previousFeature) };
+            renderSpeed(previousFeature);
             if (hotspotState) hotspotState.textContent = `Hotspot state: Leaving ${RISK_LABEL[current.risk]} risk DBSCAN cluster ${current.id}`;
             return;
           }
@@ -249,25 +269,30 @@
         return;
       }
       if (next.state === "approaching") {
-        if (previous.state === "outside" || previous.id !== next.id) announce(ALERT_TEXT.APPROACH);
+        if (previous.state === "outside" || previous.id !== next.id) announce(evaluation.message);
         current = next;
         if (hotspotState) hotspotState.textContent = `Hotspot state: Approaching ${RISK_LABEL[next.risk]} risk DBSCAN cluster ${next.id} (within ${APPROACH_METERS} m)`;
         return;
       }
       current = next;
-      if (previous.state !== "inside" || previous.id !== next.id) announce(ALERT_TEXT[next.risk]);
+      if (previous.state === "outside" || previous.id !== next.id) announce(evaluation.message);
       if (hotspotState) hotspotState.textContent = `Hotspot state: Inside ${RISK_LABEL[next.risk]} risk DBSCAN cluster ${next.id}`;
     }
 
     function onPosition(position) {
       lastPosition = position;
       const { latitude, longitude, accuracy } = position.coords;
+      const rawSpeed = position.coords.speed;
+      currentSpeedKmh = accuracy <= MAX_ALERT_ACCURACY_METERS
+        && Number.isFinite(rawSpeed) && rawSpeed >= 0 && rawSpeed * 3.6 <= 250
+        ? rawSpeed * 3.6 : null;
       const latlng = L.latLng(latitude, longitude);
       ensureGpsLayers(latlng, accuracy, position.coords.heading);
       setMapFollow(latlng, !hasCentered);
       hasCentered = true;
       if (coordinates) coordinates.textContent = `Position: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (accuracy ±${Math.round(accuracy)} m)`;
       if (fixTime) fixTime.textContent = `Last fix: ${new Date(position.timestamp || Date.now()).toLocaleTimeString()}`;
+      renderSpeed(current.id ? current.feature : null);
       if (accuracy > MAX_ALERT_ACCURACY_METERS) {
         setStatus(`GPS active, but accuracy is weak (±${Math.round(accuracy)} m). Hotspot alerts paused until accuracy is ${MAX_ALERT_ACCURACY_METERS} m or better.`);
         if (hotspotState) hotspotState.textContent = "Hotspot state: paused because GPS accuracy is weak";
@@ -279,7 +304,7 @@
       updateZone(longitude, latitude);
     }
 
-    function stopWatch() {
+    function stopWatch(speedStatus = "Unavailable") {
       if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
       watchId = null;
       running = false;
@@ -291,6 +316,9 @@
       stopButton.disabled = true;
       if (recenterButton) recenterButton.hidden = true;
       current = { state: "outside", id: null };
+      currentSpeedKmh = null;
+      renderSpeed(null);
+      if (root.TrafficSpeedometer) root.TrafficSpeedometer.stop("GPS", speedStatus);
     }
 
     function onGpsError(error) {
@@ -298,21 +326,28 @@
         stopWatch();
         setStatus("Location permission denied. Allow location access in browser settings, then start GPS again.");
       } else if (error.code === 2) {
+        currentSpeedKmh = null;
+        renderSpeed(current.id ? current.feature : null);
         setStatus("GPS location unavailable. Check device location services and move to an open area.");
       } else if (error.code === 3) {
+        currentSpeedKmh = null;
+        renderSpeed(current.id ? current.feature : null);
         setStatus("GPS request timed out. Waiting for another fix; check device location services.");
       } else {
+        currentSpeedKmh = null;
+        renderSpeed(current.id ? current.feature : null);
         setStatus("GPS could not determine your location. Check device location settings.");
       }
     }
 
     function stopGps() {
-      stopWatch();
+      stopWatch("Stopped");
       if (marker) map.removeLayer(marker);
       if (accuracyCircle) map.removeLayer(accuracyCircle);
       marker = null;
       accuracyCircle = null;
       lastPosition = null;
+      currentSpeedKmh = null;
       hasCentered = false;
       if (coordinates) coordinates.textContent = "Position: not available";
       if (fixTime) fixTime.textContent = "Last fix: not available";
@@ -334,6 +369,8 @@
       unlockSpeechFromGesture();
       running = true;
       isTracking = true;
+      currentSpeedKmh = null;
+      if (root.TrafficSpeedometer) root.TrafficSpeedometer.activate("GPS", "Unavailable");
       follow = true;
       hasCentered = false;
       startButton.disabled = true;

@@ -18,6 +18,7 @@
   // Keep these warning radii aligned with config.WARNING_BUFFER_M.
   const WARNING_BUFFER_METERS = Object.freeze({ GREEN: 50, ORANGE: 100, RED: 150 });
   const EARTH_RADIUS_METERS = 6371008.8;
+  const speedAlerts = root.TrafficSpeedAlerts;
 
   function initialize({ map, wfsUrl, geometry }) {
     const elements = {
@@ -29,6 +30,11 @@
       position: document.getElementById("vehicle-position"),
       hotspot: document.getElementById("vehicle-hotspot-status"),
       alert: document.getElementById("vehicle-alert"),
+      speed: document.getElementById("vehicle-speed"),
+      hotspotDetail: document.getElementById("vehicle-hotspot-detail"),
+      riskDetail: document.getElementById("vehicle-risk-detail"),
+      recommendedSpeed: document.getElementById("vehicle-recommended-speed"),
+      speedStatus: document.getElementById("vehicle-speed-status"),
     };
     if (!map || !geometry || Object.values(elements).some((element) => !element)) return;
 
@@ -48,6 +54,7 @@
     let vehicleMarker = null;
     let routeProgress = 0;
     let lateralOffset = 0;
+    let currentSpeedKmh = 0;
     let activeHotspotIds = new Set();
     let activeClusterIds = new Set();
     let approachAlertedClusterIds = new Set();
@@ -56,6 +63,21 @@
 
     function setState(message) {
       elements.state.textContent = message;
+    }
+
+    function renderSpeed(feature, statusOverride = null) {
+      const result = feature && speedAlerts ? speedAlerts.evaluate(feature, currentSpeedKmh) : null;
+      elements.speed.textContent = `Current speed: ${Math.round(currentSpeedKmh)} km/h`;
+      elements.hotspotDetail.textContent = `Approaching hotspot: ${result ? result.id : "—"}`;
+      elements.riskDetail.textContent = `Risk level: ${result ? result.risk : "—"}`;
+      elements.recommendedSpeed.textContent = `Recommended speed: ${result && result.recommendation ? `${result.recommendation} km/h` : "—"}`;
+      elements.speedStatus.textContent = `Speed status: ${result && result.recommendation ? result.status : "—"}`;
+      elements.speedStatus.classList.toggle("is-over", Boolean(result && result.above));
+      if (root.TrafficSpeedometer) {
+        const state = statusOverride || (currentSpeedKmh > 0 ? "Moving" : "Stopped");
+        root.TrafficSpeedometer.update("Demo", currentSpeedKmh, state);
+      }
+      return result;
     }
 
     function riskClass(feature) {
@@ -282,7 +304,7 @@
     }
 
     function announce(feature, source = "hotspot") {
-      const message = source === "approach" ? CLUSTER_APPROACH_ALERT
+      const message = source === "custom" ? feature : source === "approach" ? CLUSTER_APPROACH_ALERT
         : (source === "cluster" ? CLUSTER_ALERTS : ALERTS)[riskClass(feature)];
       if (!message) return;
       elements.alert.textContent = message;
@@ -326,9 +348,15 @@
       ));
       activeFeatures.sort((a, b) => riskRank(b) - riskRank(a));
       const currentRisk = activeFeatures[0];
+      const enteredFeatures = transition.entered.slice().sort((a, b) => riskRank(b) - riskRank(a));
       elements.hotspot.textContent = currentRisk
         ? RISK_LABEL[riskClass(currentRisk)] || "Outside hotspot"
         : "Outside hotspot";
+      renderSpeed(currentRisk);
+      if (enteredFeatures.length && !suppress) {
+        const alert = speedAlerts.evaluate(enteredFeatures[0], currentSpeedKmh);
+        announce(alert.message, "custom");
+      }
 
       const pointInRing = (longitude, latitude, ring) => {
         let inside = false;
@@ -415,7 +443,7 @@
             || Number(properties.Total_Deaths ?? properties.Deaths_T ?? 0) > 0 ? "RED"
             : Number(properties.Major_Count ?? properties.Major_Cnt ?? 0) > 0 ? "ORANGE" : "GREEN";
         elements.hotspot.textContent = `${RISK_LABEL[clusterClass] || "Accident"} · DBSCAN cluster`;
-        if (!suppress) announce({ properties: { Severity_Class: clusterClass } }, "cluster");
+        if (!suppress && !enteredFeatures.length && !linkedHotspot) announce({ properties: { Severity_Class: clusterClass } }, "cluster");
       }
     }
 
@@ -473,6 +501,7 @@
         return;
       }
       enabled = true;
+      if (root.TrafficSpeedometer) root.TrafficSpeedometer.activate("Demo", "Unavailable");
       elements.toggle.setAttribute("aria-pressed", "true");
       elements.toggle.textContent = "Demo Simulation: On";
       setButtonsReady(false);
@@ -509,6 +538,9 @@
       vehicleMarker = null;
       elements.position.textContent = "Vehicle position: not available";
       elements.hotspot.textContent = "Outside hotspot";
+      currentSpeedKmh = 0;
+      renderSpeed(null);
+      if (root.TrafficSpeedometer) root.TrafficSpeedometer.stop("Demo", "Stopped");
       elements.alert.textContent = "No demo alert yet.";
       setState("Simulation is off.");
     }
@@ -516,6 +548,11 @@
     function pause() {
       running = false;
       autoDrive = false;
+      currentSpeedKmh = 0;
+      const active = hotspotFeatures && hotspotFeatures.find((feature, index) => (
+        activeHotspotIds.has(geometry.featureId(feature, index))
+      ));
+      renderSpeed(active || null, "Paused");
       pressedKeys.clear();
       if (frameId !== null) cancelAnimationFrame(frameId);
       frameId = null;
@@ -534,8 +571,11 @@
         if (pressedKeys.has("left")) sideways += 1;
         if (pressedKeys.has("right")) sideways -= 1;
       }
-      updateVehicle(routeProgress + forward * 14 * deltaSeconds,
-        lateralOffset + sideways * 3 * deltaSeconds);
+      const nextProgress = Math.max(0, Math.min(routeLength, routeProgress + forward * 14 * deltaSeconds));
+      const nextOffset = Math.max(-6, Math.min(6, lateralOffset + sideways * 3 * deltaSeconds));
+      const traveledMeters = Math.hypot(nextProgress - routeProgress, nextOffset - lateralOffset);
+      currentSpeedKmh = deltaSeconds > 0 ? (traveledMeters / deltaSeconds) * 3.6 : 0;
+      updateVehicle(nextProgress, nextOffset);
 
       if (autoDrive && routeProgress >= routeLength) {
         pause();
@@ -554,6 +594,10 @@
       running = true;
       autoDrive = auto;
       if (auto) pressedKeys.clear();
+      const active = hotspotFeatures && hotspotFeatures.find((feature, index) => (
+        activeHotspotIds.has(geometry.featureId(feature, index))
+      ));
+      renderSpeed(active || null, "Stopped");
       lastFrameTime = performance.now();
       setState(auto ? "Simulation running. Use the keyboard to steer." : "Vehicle moving by keyboard.");
       frameId = requestAnimationFrame(frame);
