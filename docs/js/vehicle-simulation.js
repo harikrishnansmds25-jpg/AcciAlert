@@ -331,6 +331,18 @@
       }
     }
 
+    function unlockDemoSpeech() {
+      if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) return;
+      try {
+        root.speechSynthesis.resume();
+        const unlock = new root.SpeechSynthesisUtterance("");
+        unlock.volume = 0;
+        root.speechSynthesis.speak(unlock);
+      } catch (error) {
+        setState("The browser could not prepare voice alerts. Text hotspot alerts will still appear.");
+      }
+    }
+
     function updateHotspots(latlng) {
       const transition = geometry.hotspotTransitions(
         hotspotFeatures,
@@ -339,9 +351,11 @@
         latlng.lat,
         WARNING_BUFFER_METERS,
       );
-      activeHotspotIds = transition.activeIds;
       const suppress = suppressAlertsOnce;
       suppressAlertsOnce = false;
+      // Do not seed entry history from the initial silent position. The route
+      // begins inside HS01's warning radius, so its first movement must alert.
+      if (!suppress) activeHotspotIds = transition.activeIds;
 
       const activeFeatures = hotspotFeatures.filter((feature, index) => (
         activeHotspotIds.has(geometry.featureId(feature, index))
@@ -420,15 +434,15 @@
           clustersNow.add(id);
           if (!activeClusterIds.has(id)) enteredClusters.push(feature);
         } else if (distance <= CLUSTER_APPROACH_DISTANCE_METERS) {
-          if (!approachAlertedClusterIds.has(id)) {
+          if (!approachAlertedClusterIds.has(id) && !suppress) {
             approachAlertedClusterIds.add(id);
-            if (!suppress) announce(null, "approach");
+            announce(null, "approach");
           }
         } else if (distance > CLUSTER_APPROACH_DISTANCE_METERS * 2) {
           approachAlertedClusterIds.delete(id);
         }
       });
-      activeClusterIds = clustersNow;
+      if (!suppress) activeClusterIds = clustersNow;
 
       if (enteredClusters.length > 0) {
         const cluster = enteredClusters[0];
@@ -634,6 +648,7 @@
       const action = keyAction(event);
       if (!action) return;
       event.preventDefault();
+      if (!event.repeat) unlockDemoSpeech();
       pressedKeys.add(action);
       if (!running) run(false);
       else if (autoDrive) {
@@ -653,8 +668,11 @@
       if (running && !autoDrive) pause();
     });
 
-    elements.toggle.addEventListener("click", () => (enabled ? disable() : enable()));
-    elements.start.addEventListener("click", () => run(true));
+    elements.toggle.addEventListener("click", () => {
+      if (enabled) disable();
+      else { unlockDemoSpeech(); enable(); }
+    });
+    elements.start.addEventListener("click", () => { unlockDemoSpeech(); run(true); });
     elements.pause.addEventListener("click", pause);
     elements.reset.addEventListener("click", reset);
     return Object.freeze({ disable, isEnabled: () => enabled });
