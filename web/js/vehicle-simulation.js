@@ -331,18 +331,6 @@
       }
     }
 
-    function unlockDemoSpeech() {
-      if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) return;
-      try {
-        root.speechSynthesis.resume();
-        const unlock = new root.SpeechSynthesisUtterance("");
-        unlock.volume = 0;
-        root.speechSynthesis.speak(unlock);
-      } catch (error) {
-        setState("The browser could not prepare voice alerts. Text hotspot alerts will still appear.");
-      }
-    }
-
     function updateHotspots(latlng) {
       const transition = geometry.hotspotTransitions(
         hotspotFeatures,
@@ -612,12 +600,19 @@
       running = true;
       autoDrive = auto;
       if (auto) pressedKeys.clear();
+      setState(auto ? "Simulation running. Use the keyboard to steer." : "Vehicle moving by keyboard.");
+      // Speak the first applicable warning from this click/key gesture. The
+      // initial map render is intentionally silent, and a delayed animation
+      // frame may no longer have browser permission to start speech.
+      if (suppressAlertsOnce) {
+        suppressAlertsOnce = false;
+        updateVehicle(routeProgress, lateralOffset);
+      }
       const active = hotspotFeatures && hotspotFeatures.find((feature, index) => (
         activeHotspotIds.has(geometry.featureId(feature, index))
       ));
       renderSpeed(active || null, "Stopped");
       lastFrameTime = performance.now();
-      setState(auto ? "Simulation running. Use the keyboard to steer." : "Vehicle moving by keyboard.");
       frameId = requestAnimationFrame(frame);
     }
 
@@ -652,7 +647,6 @@
       const action = keyAction(event);
       if (!action) return;
       event.preventDefault();
-      if (!event.repeat) unlockDemoSpeech();
       pressedKeys.add(action);
       if (!running) run(false);
       else if (autoDrive) {
@@ -674,9 +668,9 @@
 
     elements.toggle.addEventListener("click", () => {
       if (enabled) disable();
-      else { unlockDemoSpeech(); enable(); }
+      else enable();
     });
-    elements.start.addEventListener("click", () => { unlockDemoSpeech(); run(true); });
+    elements.start.addEventListener("click", () => run(true));
     elements.pause.addEventListener("click", pause);
     elements.reset.addEventListener("click", reset);
     return Object.freeze({ disable, isEnabled: () => enabled });
