@@ -527,6 +527,10 @@
         activeHotspotIds = new Set();
         activeClusterIds = new Set();
         approachAlertedClusterIds = new Set();
+        // The initial vehicle position is rendered before the user starts the
+        // demo. Do not consume hotspot entry alerts until the first movement,
+        // when speech playback is still directly connected to the Start action.
+        suppressAlertsOnce = true;
         createVehicle();
         setButtonsReady(true);
         setState("Simulation ready. Press Start Simulation or use the keyboard.");
