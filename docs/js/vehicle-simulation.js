@@ -59,6 +59,7 @@
     let activeClusterIds = new Set();
     let approachAlertedClusterIds = new Set();
     let suppressAlertsOnce = false;
+    let startupAlertPending = false;
     const pressedKeys = new Set();
 
     function setState(message) {
@@ -520,6 +521,9 @@
         // when speech playback is still directly connected to the Start action.
         suppressAlertsOnce = true;
         createVehicle();
+        // createVehicle() consumes its one-time suppression while drawing the
+        // stationary marker. Keep a separate pending flag for the Start click.
+        startupAlertPending = true;
         setButtonsReady(true);
         setState("Simulation ready. Press Start Simulation or use the keyboard.");
       }).catch((error) => {
@@ -540,6 +544,7 @@
       activeHotspotIds = new Set();
       activeClusterIds = new Set();
       approachAlertedClusterIds = new Set();
+      startupAlertPending = false;
       if (vehicleMarker) map.removeLayer(vehicleMarker);
       vehicleMarker = null;
       elements.position.textContent = "Vehicle position: not available";
@@ -604,8 +609,8 @@
       // Speak the first applicable warning from this click/key gesture. The
       // initial map render is intentionally silent, and a delayed animation
       // frame may no longer have browser permission to start speech.
-      if (suppressAlertsOnce) {
-        suppressAlertsOnce = false;
+      if (startupAlertPending) {
+        startupAlertPending = false;
         updateVehicle(routeProgress, lateralOffset);
       }
       const active = hotspotFeatures && hotspotFeatures.find((feature, index) => (
@@ -627,6 +632,7 @@
       lateralOffset = 0;
       suppressAlertsOnce = true;
       updateVehicle(0, 0);
+      startupAlertPending = true;
       setState("Vehicle reset to the start of the mapped route.");
     }
 
