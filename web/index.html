@@ -5,13 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#173a5e">
   <title>AcciAlert</title>
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/png" href="assets/accialert-brand-mark.png">
+  <link rel="apple-touch-icon" href="assets/accialert-brand-mark.png">
   <link
     rel="stylesheet"
     href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"
     crossorigin="anonymous"
   >
   <link rel="stylesheet" href="css/styles.css">
+  <script defer src="js/intro-animation.js"></script>
   <script
     defer
     src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
@@ -28,11 +30,21 @@
   <script defer src="js/app.js"></script>
 </head>
 <body>
+  <section id="intro-splash" class="intro-splash" aria-label="AcciAlert opening animation" hidden>
+    <video id="intro-video" class="intro-splash__video" muted playsinline preload="auto"
+      poster="assets/accialert-road-safety-logo.webp" aria-hidden="true">
+      <source src="assets/accialert-logo-reveal.mp4" type="video/mp4">
+    </video>
+    <button id="intro-skip" class="intro-splash__skip" type="button">Skip intro</button>
+  </section>
   <header class="site-header">
     <div class="header-content">
-      <p class="eyebrow">Web GIS</p>
-      <h1>AcciAlert</h1>
-      <p class="subtitle">Know the Risk Before You Reach</p>
+      <img class="brand-mark" src="assets/accialert-brand-mark.png" alt="AcciAlert road safety emblem" width="58" height="58">
+      <div class="header-copy">
+        <p class="eyebrow">Web GIS</p>
+        <h1>AcciAlert</h1>
+        <p class="subtitle">Know the Risk Before You Reach</p>
+      </div>
     </div>
   </header>
 
