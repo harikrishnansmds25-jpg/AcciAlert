@@ -177,12 +177,13 @@ h1 {
 
 .speedometer {
   position: absolute;
-  top: 50%;
+  top: auto;
   right: 12px;
+  bottom: clamp(78px, 12vh, 112px);
   z-index: 1002;
   width: 178px;
   padding: 12px 14px;
-  transform: translateY(-50%);
+  transform: none;
   border: 1px solid #cbd5df;
   border-radius: 12px;
   background: rgb(255 255 255 / 97%);
