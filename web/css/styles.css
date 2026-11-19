@@ -223,7 +223,7 @@ h1 {
 
 .gps-controls {
   position: absolute;
-  top: 76px;
+  top: 120px;
   left: 12px;
   z-index: 1001;
   width: max-content;
@@ -588,7 +588,7 @@ h1 {
   }
 
   .gps-controls {
-    top: 72px;
+    top: 112px;
     left: 8px;
     max-width: calc(100% - 16px);
   }
