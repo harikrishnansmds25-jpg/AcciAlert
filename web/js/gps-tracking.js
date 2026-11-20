@@ -36,6 +36,7 @@
     };
     if (!map || !geometry || !startButton || !stopButton) return;
     const tracker = geometry.createAlertTracker({ approachMeters: APPROACH_METERS, hysteresisMeters: EXIT_HYSTERESIS_METERS });
+    const policy = speedAlerts && speedAlerts.createAlertPolicy ? speedAlerts.createAlertPolicy() : null;
 
     let watchId = null;
     let running = false;
@@ -62,7 +63,7 @@
       if (speedElements.recommendation) speedElements.recommendation.textContent = `Recommended speed: ${evaluation && evaluation.recommendation ? `${evaluation.recommendation} km/h` : "—"}`;
       if (speedElements.status) {
         speedElements.status.textContent = `Speed status: ${evaluation && evaluation.recommendation ? evaluation.status : "—"}`;
-        speedElements.status.classList.toggle("is-over", Boolean(evaluation && evaluation.above));
+        speedElements.status.classList.toggle("is-over", Boolean(evaluation && evaluation.atOrAbove));
       }
       if (root.TrafficSpeedometer && running) {
         const state = currentSpeedKmh === null ? "Unavailable" : currentSpeedKmh > 0 ? "Moving" : "Stopped";
@@ -184,14 +185,13 @@
       const { events, primary } = tracker.update(features, longitude, latitude);
       current = primary;
       renderSpeed(primary.feature);
-      events.forEach((event) => {
-        if (event.type === "approach") {
-          announce(speedAlerts ? speedAlerts.approachMessage : "Careful! Accident hotspot ahead. Please slow down.");
-        } else if (event.type === "enter") {
-          announce(speedAlerts ? speedAlerts.evaluate(event.feature, currentSpeedKmh).message
-            : `You are entering a ${RISK_LABEL[event.risk].toLowerCase()}-risk accident hotspot.`);
-        }
-      });
+      // Voice only at or above the hotspot's recommended speed (or when GPS speed is unknown).
+      if (policy) {
+        policy.process(events, primary, currentSpeedKmh).forEach((alert) => {
+          if (alert.speak) announce(alert.text);
+          else if (alertText) alertText.textContent = `Last alert: ${alert.text}`;
+        });
+      }
       if (!hotspotState) return;
       if (primary.state === "inside") {
         hotspotState.textContent = `Hotspot state: Inside ${RISK_LABEL[primary.risk]} risk hotspot ${primary.id}`;
@@ -239,6 +239,7 @@
       if (recenterButton) recenterButton.hidden = true;
       current = { state: "outside", id: null };
       tracker.reset();
+      if (policy) policy.reset();
       currentSpeedKmh = null;
       renderSpeed(null);
       if (root.TrafficSpeedometer) root.TrafficSpeedometer.stop("GPS", speedStatus);

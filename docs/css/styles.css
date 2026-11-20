@@ -639,3 +639,30 @@ h1 {
   color: #9a3412;
   font-weight: 600;
 }
+
+/* Demo speed control */
+.simulation-controls .demo-speed {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.simulation-controls .demo-speed label {
+  color: #173a5e;
+  font-size: 0.86rem;
+}
+
+.simulation-controls .demo-speed input[type="range"] {
+  width: 100%;
+  accent-color: #1267d6;
+}
+
+.simulation-controls .demo-speed__hint {
+  margin: 0;
+  color: #526170;
+  font-size: 0.72rem;
+}

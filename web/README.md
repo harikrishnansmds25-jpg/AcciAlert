@@ -47,6 +47,13 @@ needed if a local dataset is absent and an optional fallback is configured.
   button; the choice is remembered in the browser. Turning voice on says
   "Voice alerts on." so you can confirm sound works. Alerts are queued and
   spoken in order, and a stuck browser speech engine is reset automatically.
+- Voice alerts play only when the speed is at or above the hotspot's
+  recommended demonstration speed (HS01 40, HS02 50, HS03 60 km/h). Below it,
+  the alert is shown as text only. A hotspot entered below its threshold gets
+  one voice alert if the vehicle then speeds up to or past it inside. If GPS
+  reports no speed, alerts are spoken (fail-safe).
+- The demo simulation has a speed slider (10–80 km/h); + / − keys change it by
+  5 km/h, so every speed condition can be demonstrated.
 - The map follows the device initially. Dragging pauses following; Recenter on
   me resumes it. A screen wake lock is requested where supported.
 - Keep the page open and visible. A web page cannot guarantee background

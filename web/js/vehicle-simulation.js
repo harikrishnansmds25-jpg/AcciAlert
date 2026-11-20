@@ -26,6 +26,8 @@
       speedStatus: document.getElementById("vehicle-speed-status"),
     };
     if (!map || !geometry || Object.values(elements).some((element) => !element)) return;
+    const speedInput = document.getElementById("demo-speed");
+    const speedLabel = document.getElementById("demo-speed-value");
 
     let enabled = false;
     let running = false;
@@ -46,6 +48,10 @@
       approachMeters: APPROACH_DISTANCE_METERS, hysteresisMeters: EXIT_HYSTERESIS_METERS,
     });
     let currentZone = { state: "outside", feature: null };
+    const policy = speedAlerts && speedAlerts.createAlertPolicy ? speedAlerts.createAlertPolicy() : null;
+    const MIN_DEMO_SPEED = 10;
+    const MAX_DEMO_SPEED = 80;
+    let demoSpeedKmh = speedInput ? Number(speedInput.value) || 50 : 50;
     let suppressAlertsOnce = false;
     let startupAlertPending = false;
     const pressedKeys = new Set();
@@ -61,7 +67,7 @@
       elements.riskDetail.textContent = `Risk level: ${result ? result.risk : "—"}`;
       elements.recommendedSpeed.textContent = `Recommended speed: ${result && result.recommendation ? `${result.recommendation} km/h` : "—"}`;
       elements.speedStatus.textContent = `Speed status: ${result && result.recommendation ? result.status : "—"}`;
-      elements.speedStatus.classList.toggle("is-over", Boolean(result && result.above));
+      elements.speedStatus.classList.toggle("is-over", Boolean(result && result.atOrAbove));
       if (root.TrafficSpeedometer) {
         const state = statusOverride || (currentSpeedKmh > 0 ? "Moving" : "Stopped");
         root.TrafficSpeedometer.update("Demo", currentSpeedKmh, state);
@@ -267,6 +273,17 @@
       if (root.TrafficVoice) root.TrafficVoice.say(message);
     }
 
+    function showAlertText(message) {
+      if (message) elements.alert.textContent = message;
+    }
+
+    function setDemoSpeed(value) {
+      const next = Math.max(MIN_DEMO_SPEED, Math.min(MAX_DEMO_SPEED, Math.round(Number(value) / 5) * 5 || 50));
+      demoSpeedKmh = next;
+      if (speedInput) speedInput.value = String(next);
+      if (speedLabel) speedLabel.textContent = String(next);
+    }
+
     function unlockVoice() {
       if (root.TrafficVoice) root.TrafficVoice.unlock();
     }
@@ -286,13 +303,11 @@
           ? `Approaching ${RISK_LABEL[primary.risk]} risk hotspot ${primary.id} (${Math.round(primary.distance)} m from boundary)`
           : "Outside hotspot";
       renderSpeed(primary.feature);
-      events.forEach((event) => {
-        if (event.type === "approach") {
-          announce(speedAlerts ? speedAlerts.approachMessage : "Careful! Accident hotspot ahead. Please slow down.");
-        } else if (event.type === "enter") {
-          announce(speedAlerts ? speedAlerts.evaluate(event.feature, currentSpeedKmh).message
-            : `You are entering a ${RISK_LABEL[event.risk].toLowerCase()}-risk accident hotspot.`);
-        }
+      if (silent || !policy) return;
+      // Voice only at or above the hotspot's recommended speed; below it, text only.
+      policy.process(events, primary, currentSpeedKmh).forEach((alert) => {
+        if (alert.speak) announce(alert.text);
+        else showAlertText(alert.text);
       });
     }
 
@@ -360,6 +375,7 @@
         routeProgress = 0;
         lateralOffset = 0;
         tracker.reset();
+        if (policy) policy.reset();
         // The initial vehicle position is rendered before the user starts the
         // demo. Do not consume hotspot entry alerts until the first movement,
         // when speech playback is still directly connected to the Start action.
@@ -386,6 +402,7 @@
       setButtonsReady(false);
       pressedKeys.clear();
       tracker.reset();
+      if (policy) policy.reset();
       currentZone = { state: "outside", feature: null };
       startupAlertPending = false;
       if (vehicleMarker) map.removeLayer(vehicleMarker);
@@ -423,7 +440,7 @@
         if (pressedKeys.has("left")) sideways += 1;
         if (pressedKeys.has("right")) sideways -= 1;
       }
-      const nextProgress = Math.max(0, Math.min(routeLength, routeProgress + forward * 14 * deltaSeconds));
+      const nextProgress = Math.max(0, Math.min(routeLength, routeProgress + forward * (demoSpeedKmh / 3.6) * deltaSeconds));
       const nextOffset = Math.max(-6, Math.min(6, lateralOffset + sideways * 3 * deltaSeconds));
       const traveledMeters = Math.hypot(nextProgress - routeProgress, nextOffset - lateralOffset);
       currentSpeedKmh = deltaSeconds > 0 ? (traveledMeters / deltaSeconds) * 3.6 : 0;
@@ -463,6 +480,7 @@
       if (!enabled || !routeCoordinates) return;
       pause();
       tracker.reset();
+      if (policy) policy.reset();
       if (root.TrafficVoice) root.TrafficVoice.stop();
       elements.alert.textContent = "No demo alert yet.";
       routeProgress = 0;
@@ -487,6 +505,12 @@
 
     document.addEventListener("keydown", (event) => {
       if (!enabled || !routeCoordinates) return;
+      const speedStep = ({ Equal: 5, NumpadAdd: 5, Minus: -5, NumpadSubtract: -5 })[event.code];
+      if (speedStep && !(event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName))) {
+        event.preventDefault();
+        setDemoSpeed(demoSpeedKmh + speedStep);
+        return;
+      }
       const action = keyAction(event);
       if (!action) return;
       event.preventDefault();
@@ -516,6 +540,10 @@
     });
     elements.start.addEventListener("click", () => { unlockVoice(); run(true); });
     elements.pause.addEventListener("click", pause);
+    if (speedInput) {
+      speedInput.addEventListener("input", () => setDemoSpeed(speedInput.value));
+      setDemoSpeed(speedInput.value);
+    }
     elements.reset.addEventListener("click", reset);
     return Object.freeze({ disable, isEnabled: () => enabled });
   }
