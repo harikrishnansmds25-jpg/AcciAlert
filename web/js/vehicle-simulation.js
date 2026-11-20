@@ -1,22 +1,11 @@
 "use strict";
 
 (function exposeVehicleSimulation(root) {
-  const ALERTS = Object.freeze({
-    GREEN: "Careful! Accident hotspot ahead. Please slow down.",
-    ORANGE: "Attention! Accident hotspot ahead. Drive carefully.",
-    RED: "Warning! High-risk accident hotspot ahead. Reduce your speed!",
-  });
-  const CLUSTER_ALERTS = Object.freeze({
-    GREEN: "Caution. You are entering a low-risk accident cluster. Please slow down.",
-    ORANGE: "Attention. You are entering a medium-risk accident cluster. Drive carefully.",
-    RED: "Warning. You are entering a high-risk accident cluster. Reduce your speed.",
-  });
-  const CLUSTER_APPROACH_ALERT = "Careful! Accident hotspot ahead. Please slow down.";
-  const CLUSTER_APPROACH_DISTANCE_METERS = 10;
-  const RISK_RANK = Object.freeze({ GREEN: 1, ORANGE: 2, RED: 3 });
-  const RISK_LABEL = Object.freeze({ GREEN: "Low risk", ORANGE: "Medium risk", RED: "High risk" });
-  // Keep these warning radii aligned with config.WARNING_BUFFER_M.
-  const WARNING_BUFFER_METERS = Object.freeze({ GREEN: 50, ORANGE: 100, RED: 150 });
+  // Same two-stage rule as live GPS tracking (see hotspot-geometry.js createAlertTracker):
+  // one approach alert within 10 m of a hotspot boundary, one risk alert on entry.
+  const APPROACH_DISTANCE_METERS = 10;
+  const EXIT_HYSTERESIS_METERS = 5;
+  const RISK_LABEL = Object.freeze({ GREEN: "Low", ORANGE: "Medium", RED: "High" });
   const EARTH_RADIUS_METERS = 6371008.8;
   const speedAlerts = root.TrafficSpeedAlerts;
 
@@ -47,17 +36,16 @@
     let routeSegments = [];
     let routeLength = 0;
     let routePromise = null;
-    let hotspotFeatures = null;
-    let hotspotPromise = null;
     let clusterFeatures = null;
     let clusterPromise = null;
     let vehicleMarker = null;
     let routeProgress = 0;
     let lateralOffset = 0;
     let currentSpeedKmh = 0;
-    let activeHotspotIds = new Set();
-    let activeClusterIds = new Set();
-    let approachAlertedClusterIds = new Set();
+    const tracker = geometry.createAlertTracker({
+      approachMeters: APPROACH_DISTANCE_METERS, hysteresisMeters: EXIT_HYSTERESIS_METERS,
+    });
+    let currentZone = { state: "outside", feature: null };
     let suppressAlertsOnce = false;
     let startupAlertPending = false;
     const pressedKeys = new Set();
@@ -79,15 +67,6 @@
         root.TrafficSpeedometer.update("Demo", currentSpeedKmh, state);
       }
       return result;
-    }
-
-    function riskClass(feature) {
-      return String((feature.properties || {}).Sev_Class
-        || (feature.properties || {}).Severity_Class || "").trim().toUpperCase();
-    }
-
-    function riskRank(feature) {
-      return RISK_RANK[riskClass(feature)] || 0;
     }
 
     function haversineMeters(first, second) {
@@ -116,53 +95,29 @@
       }).then((data) => Array.isArray(data.features) ? data.features : []);
     }
 
-    function loadHotspots() {
-      if (hotspotFeatures) return Promise.resolve(hotspotFeatures);
-      const localHotspots = root.TrafficHotspotPoints;
-      if (localHotspots && Array.isArray(localHotspots.features)) {
-        hotspotFeatures = localHotspots.features.filter((feature) => (
-          feature.geometry && feature.geometry.type === "Point"
-        ));
-        if (hotspotFeatures.length) return Promise.resolve(hotspotFeatures);
-      }
-      if (!hotspotPromise) {
-        hotspotPromise = loadLayer("traffic:hotspot_points").then((features) => {
-          hotspotFeatures = features.filter((feature) => (
-            feature.geometry && feature.geometry.type === "Point"
-          ));
-          if (hotspotFeatures.length === 0) throw new Error("No hotspot points were returned.");
-          return hotspotFeatures;
-        }).catch((error) => {
-          hotspotPromise = null;
-          throw error;
-        });
-      }
-      return hotspotPromise;
-    }
-
+    // Hotspot alert zones are the DBSCAN hotspot polygons (bundled locally, WFS as fallback).
     function loadClusters() {
       if (clusterFeatures) return Promise.resolve(clusterFeatures);
       const localClusters = root.TrafficDBSCANClusters;
-      if (localClusters && Array.isArray(localClusters.features)) {
-        clusterFeatures = localClusters.features.filter((feature) => (
-          feature.geometry && ["Polygon", "MultiPolygon"].includes(feature.geometry.type)
-        ));
+      const polygonsOf = (features) => features.filter((feature) => (
+        feature.geometry && ["Polygon", "MultiPolygon"].includes(feature.geometry.type)
+      ));
+      if (localClusters && Array.isArray(localClusters.features) && polygonsOf(localClusters.features).length) {
+        clusterFeatures = polygonsOf(localClusters.features);
         return Promise.resolve(clusterFeatures);
       }
       if (!clusterPromise) {
         clusterPromise = loadLayer("traffic:hotspot_polygons")
           .catch(() => loadLayer("traffic:dbscan_clusters"))
           .then((features) => {
-          clusterFeatures = features.filter((feature) => (
-            feature.geometry && ["Polygon", "MultiPolygon"].includes(feature.geometry.type)
-          ));
-          return clusterFeatures;
-        }).catch((error) => {
-          clusterPromise = null;
-          console.warn("DBSCAN clusters could not be loaded; hotspot alerts remain available.", error);
-          clusterFeatures = [];
-          return clusterFeatures;
-        });
+            const polygons = polygonsOf(features);
+            if (!polygons.length) throw new Error("No hotspot polygons were returned.");
+            clusterFeatures = polygons;
+            return clusterFeatures;
+          }).catch((error) => {
+            clusterPromise = null;
+            throw error;
+          });
       }
       return clusterPromise;
     }
@@ -304,9 +259,7 @@
       return closest ? closest.progress : 0;
     }
 
-    function announce(feature, source = "hotspot") {
-      const message = source === "custom" ? feature : source === "approach" ? CLUSTER_APPROACH_ALERT
-        : (source === "cluster" ? CLUSTER_ALERTS : ALERTS)[riskClass(feature)];
+    function announce(message) {
       if (!message) return;
       elements.alert.textContent = message;
       if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) {
@@ -332,122 +285,29 @@
       }
     }
 
+    // Stage 1: within 10 m of a hotspot boundary -> one approach alert.
+    // Stage 2: inside the hotspot polygon -> one risk / speed alert.
+    // The initial, stationary placement is previewed silently and does not
+    // seed alert history, so the first movement after Start can still alert.
     function updateHotspots(latlng) {
-      const transition = geometry.hotspotTransitions(
-        hotspotFeatures,
-        activeHotspotIds,
-        latlng.lng,
-        latlng.lat,
-        WARNING_BUFFER_METERS,
-      );
-      const suppress = suppressAlertsOnce;
+      const silent = suppressAlertsOnce;
       suppressAlertsOnce = false;
-      // Do not seed entry history from the initial silent position. The route
-      // begins inside HS01's warning radius, so its first movement must alert.
-      if (!suppress) activeHotspotIds = transition.activeIds;
-
-      const activeFeatures = hotspotFeatures.filter((feature, index) => (
-        activeHotspotIds.has(geometry.featureId(feature, index))
-      ));
-      activeFeatures.sort((a, b) => riskRank(b) - riskRank(a));
-      const currentRisk = activeFeatures[0];
-      const enteredFeatures = transition.entered.slice().sort((a, b) => riskRank(b) - riskRank(a));
-      elements.hotspot.textContent = currentRisk
-        ? RISK_LABEL[riskClass(currentRisk)] || "Outside hotspot"
-        : "Outside hotspot";
-      renderSpeed(currentRisk);
-      if (enteredFeatures.length && !suppress) {
-        const alert = speedAlerts.evaluate(enteredFeatures[0], currentSpeedKmh);
-        announce(alert.message, "custom");
-      }
-
-      const pointInRing = (longitude, latitude, ring) => {
-        let inside = false;
-        for (let index = 0, previous = ring.length - 1; index < ring.length; previous = index, index += 1) {
-          const [x1, y1] = ring[index];
-          const [x2, y2] = ring[previous];
-          const crosses = ((y1 > latitude) !== (y2 > latitude))
-            && longitude < ((x2 - x1) * (latitude - y1)) / (y2 - y1) + x1;
-          if (crosses) inside = !inside;
-        }
-        return inside;
-      };
-      const inPolygon = (longitude, latitude, polygon) => (
-        pointInRing(longitude, latitude, polygon[0])
-        && !polygon.slice(1).some((ring) => pointInRing(longitude, latitude, ring))
-      );
-      const inGeometry = (longitude, latitude, value) => {
-        if (!value) return false;
-        if (value.type === "Polygon") return inPolygon(longitude, latitude, value.coordinates);
-        if (value.type === "MultiPolygon") return value.coordinates.some((polygon) => (
-          inPolygon(longitude, latitude, polygon)
-        ));
-        return false;
-      };
-      const segmentDistanceMeters = (longitude, latitude, first, second) => {
-        const radians = Math.PI / 180;
-        const latitudeScale = EARTH_RADIUS_METERS * radians;
-        const longitudeScale = latitudeScale * Math.cos(latitude * radians);
-        const ax = (first[0] - longitude) * longitudeScale;
-        const ay = (first[1] - latitude) * latitudeScale;
-        const bx = (second[0] - longitude) * longitudeScale;
-        const by = (second[1] - latitude) * latitudeScale;
-        const dx = bx - ax;
-        const dy = by - ay;
-        const lengthSquared = dx * dx + dy * dy;
-        const fraction = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1,
-          -(ax * dx + ay * dy) / lengthSquared));
-        return Math.hypot(ax + fraction * dx, ay + fraction * dy);
-      };
-      const distanceToGeometryMeters = (longitude, latitude, value) => {
-        if (inGeometry(longitude, latitude, value)) return 0;
-        const polygons = value.type === "Polygon" ? [value.coordinates]
-          : value.type === "MultiPolygon" ? value.coordinates : [];
-        let distance = Infinity;
-        polygons.forEach((polygon) => polygon.forEach((ring) => {
-          for (let index = 0; index < ring.length; index += 1) {
-            distance = Math.min(distance, segmentDistanceMeters(
-              longitude, latitude, ring[index], ring[(index + 1) % ring.length],
-            ));
-          }
-        }));
-        return distance;
-      };
-      const clustersNow = new Set();
-      const enteredClusters = [];
-      clusterFeatures.forEach((feature) => {
-        const id = String((feature.properties || {}).Cluster_ID || feature.id || "");
-        const inside = inGeometry(latlng.lng, latlng.lat, feature.geometry);
-        const distance = distanceToGeometryMeters(latlng.lng, latlng.lat, feature.geometry);
-        if (inside) {
-          clustersNow.add(id);
-          if (!activeClusterIds.has(id)) enteredClusters.push(feature);
-        } else if (distance <= CLUSTER_APPROACH_DISTANCE_METERS) {
-          if (!approachAlertedClusterIds.has(id) && !suppress) {
-            approachAlertedClusterIds.add(id);
-            announce(null, "approach");
-          }
-        } else if (distance > CLUSTER_APPROACH_DISTANCE_METERS * 2) {
-          approachAlertedClusterIds.delete(id);
+      const { events, primary } = tracker.update(clusterFeatures, latlng.lng, latlng.lat, { preview: silent });
+      currentZone = primary;
+      elements.hotspot.textContent = primary.state === "inside"
+        ? `Inside ${RISK_LABEL[primary.risk]} risk hotspot ${primary.id}`
+        : primary.state === "approaching"
+          ? `Approaching ${RISK_LABEL[primary.risk]} risk hotspot ${primary.id} (${Math.round(primary.distance)} m from boundary)`
+          : "Outside hotspot";
+      renderSpeed(primary.feature);
+      events.forEach((event) => {
+        if (event.type === "approach") {
+          announce(speedAlerts ? speedAlerts.approachMessage : "Careful! Accident hotspot ahead. Please slow down.");
+        } else if (event.type === "enter") {
+          announce(speedAlerts ? speedAlerts.evaluate(event.feature, currentSpeedKmh).message
+            : `You are entering a ${RISK_LABEL[event.risk].toLowerCase()}-risk accident hotspot.`);
         }
       });
-      if (!suppress) activeClusterIds = clustersNow;
-
-      if (enteredClusters.length > 0) {
-        const cluster = enteredClusters[0];
-        const properties = cluster.properties || {};
-        const clusterId = Number(properties.Cluster_ID);
-        const linkedHotspot = hotspotFeatures.find((feature) => (
-          Number((feature.properties || {}).DBSCAN_Cluster_ID
-            ?? (feature.properties || {}).DBSCAN_ID) === clusterId
-        ));
-        const clusterClass = linkedHotspot ? riskClass(linkedHotspot)
-          : Number(properties.Fatal_Count ?? properties.Fatal_Cnt ?? 0) > 0
-            || Number(properties.Total_Deaths ?? properties.Deaths_T ?? 0) > 0 ? "RED"
-            : Number(properties.Major_Count ?? properties.Major_Cnt ?? 0) > 0 ? "ORANGE" : "GREEN";
-        elements.hotspot.textContent = `${RISK_LABEL[clusterClass] || "Accident"} · DBSCAN cluster`;
-        if (!suppress && !enteredFeatures.length && !linkedHotspot) announce({ properties: { Severity_Class: clusterClass } }, "cluster");
-      }
     }
 
     function updateVehicle(distance = routeProgress, offset = lateralOffset) {
@@ -509,13 +369,11 @@
       elements.toggle.textContent = "Demo Simulation: On";
       setButtonsReady(false);
       setState("Loading the mapped road route and hotspots…");
-      Promise.all([loadRoute(), loadHotspots(), loadClusters()]).then(() => {
+      Promise.all([loadRoute(), loadClusters()]).then(() => {
         if (!enabled) return;
         routeProgress = 0;
         lateralOffset = 0;
-        activeHotspotIds = new Set();
-        activeClusterIds = new Set();
-        approachAlertedClusterIds = new Set();
+        tracker.reset();
         // The initial vehicle position is rendered before the user starts the
         // demo. Do not consume hotspot entry alerts until the first movement,
         // when speech playback is still directly connected to the Start action.
@@ -541,9 +399,8 @@
       elements.toggle.textContent = "Demo Simulation: Off";
       setButtonsReady(false);
       pressedKeys.clear();
-      activeHotspotIds = new Set();
-      activeClusterIds = new Set();
-      approachAlertedClusterIds = new Set();
+      tracker.reset();
+      currentZone = { state: "outside", feature: null };
       startupAlertPending = false;
       if (vehicleMarker) map.removeLayer(vehicleMarker);
       vehicleMarker = null;
@@ -560,10 +417,7 @@
       running = false;
       autoDrive = false;
       currentSpeedKmh = 0;
-      const active = hotspotFeatures && hotspotFeatures.find((feature, index) => (
-        activeHotspotIds.has(geometry.featureId(feature, index))
-      ));
-      renderSpeed(active || null, "Paused");
+      renderSpeed(currentZone.feature || null, "Paused");
       pressedKeys.clear();
       if (frameId !== null) cancelAnimationFrame(frameId);
       frameId = null;
@@ -613,10 +467,7 @@
         startupAlertPending = false;
         updateVehicle(routeProgress, lateralOffset);
       }
-      const active = hotspotFeatures && hotspotFeatures.find((feature, index) => (
-        activeHotspotIds.has(geometry.featureId(feature, index))
-      ));
-      renderSpeed(active || null, "Stopped");
+      renderSpeed(currentZone.feature || null, "Stopped");
       lastFrameTime = performance.now();
       frameId = requestAnimationFrame(frame);
     }
@@ -624,9 +475,7 @@
     function reset() {
       if (!enabled || !routeCoordinates) return;
       pause();
-      activeHotspotIds = new Set();
-      activeClusterIds = new Set();
-      approachAlertedClusterIds = new Set();
+      tracker.reset();
       elements.alert.textContent = "No demo alert yet.";
       routeProgress = 0;
       lateralOffset = 0;

@@ -6,39 +6,19 @@
   const EXIT_HYSTERESIS_METERS = 5;
   const MAX_ALERT_ACCURACY_METERS = 30;
   const MIN_SPEECH_GAP_MS = 1200;
-  const RISK_RANK = Object.freeze({ GREEN: 1, ORANGE: 2, RED: 3 });
   const RISK_LABEL = Object.freeze({ GREEN: "Low", ORANGE: "Medium", RED: "High" });
   const speedAlerts = root.TrafficSpeedAlerts;
 
-  function featureRisk(feature) {
-    const properties = feature.properties || {};
-    const direct = String(properties.Sev_Class || properties.Severity_Class || properties.Risk_Class || "")
-      .trim().toUpperCase();
-    if (RISK_RANK[direct]) return direct;
-    const status = String(properties.Hotspot_Status || "").toUpperCase();
-    const match = status.match(/\((GREEN|ORANGE|RED)\)/);
-    return match ? match[1] : "GREEN";
-  }
-
-  function featureKey(feature, index) {
-    const properties = feature.properties || {};
-    return String(properties.Hotspot_ID || properties.DBSCAN_ID || properties.Cluster_ID || properties.cluster_id || feature.id || `cluster-${index + 1}`);
-  }
-
+  // Stateless snapshot (kept for external callers); live alerts use geometry.createAlertTracker.
   function classifyPosition(features, geometry, longitude, latitude) {
-    const measurements = features.map((feature, index) => ({
-      feature,
-      id: featureKey(feature, index),
+    const { primary } = geometry.createAlertTracker({ approachMeters: APPROACH_METERS })
+      .update(features, longitude, latitude, { preview: true });
+    if (primary.state !== "outside") return primary;
+    const nearest = (features || []).map((feature, index) => ({
+      feature, id: geometry.hotspotKey(feature, index), risk: geometry.featureRisk(feature),
       distance: geometry.geometryDistanceMeters(feature.geometry, longitude, latitude),
-      inside: geometry.geometryContainsPoint(feature.geometry, longitude, latitude),
-      risk: featureRisk(feature),
-    }));
-    const inside = measurements.filter((item) => item.inside)
-      .sort((a, b) => RISK_RANK[b.risk] - RISK_RANK[a.risk]);
-    if (inside.length) return { state: "inside", ...inside[0] };
-    const approaching = measurements.filter((item) => item.distance <= APPROACH_METERS)
-      .sort((a, b) => a.distance - b.distance);
-    return approaching.length ? { state: "approaching", ...approaching[0] } : { state: "outside" };
+    })).filter((item) => item.distance <= APPROACH_METERS).sort((a, b) => a.distance - b.distance)[0];
+    return nearest ? { state: "approaching", ...nearest } : { state: "outside" };
   }
 
   function initialize({ map, wfsUrl, geometry, vehicleSimulation }) {
@@ -57,6 +37,7 @@
       recommendation: el("gps-recommended-speed"), status: el("gps-speed-status"),
     };
     if (!map || !geometry || !startButton || !stopButton) return;
+    const tracker = geometry.createAlertTracker({ approachMeters: APPROACH_METERS, hysteresisMeters: EXIT_HYSTERESIS_METERS });
 
     let watchId = null;
     let running = false;
@@ -236,47 +217,29 @@
       }
     }
 
+    // Stage 1: within APPROACH_METERS of a hotspot boundary -> one approach alert.
+    // Stage 2: inside the hotspot polygon -> one risk / speed alert.
     function updateZone(longitude, latitude) {
       if (!features) return;
-      const next = classifyPosition(features, geometry, longitude, latitude);
-      const evaluation = renderSpeed(next.state === "outside" ? null : next.feature);
-      const previous = current;
-      if (previous.id && previous.state !== "outside") {
-        const previousFeature = features.find((feature, index) => featureKey(feature, index) === previous.id);
-        if (previousFeature) {
-          const distance = geometry.geometryDistanceMeters(previousFeature.geometry, longitude, latitude);
-          const stillInside = geometry.geometryContainsPoint(previousFeature.geometry, longitude, latitude);
-          if (stillInside || distance <= EXIT_HYSTERESIS_METERS) {
-            if (next.state === "inside" && next.id !== previous.id) {
-              current = next;
-            } else {
-              current = { state: "inside", id: previous.id, feature: previousFeature, risk: featureRisk(previousFeature) };
-              renderSpeed(previousFeature);
-              if (hotspotState) hotspotState.textContent = `Hotspot state: Inside ${RISK_LABEL[current.risk]} risk DBSCAN cluster ${current.id}`;
-              return;
-            }
-          } else if (distance <= APPROACH_METERS + EXIT_HYSTERESIS_METERS && next.state === "outside") {
-            current = { state: "approaching", id: previous.id, feature: previousFeature, risk: featureRisk(previousFeature) };
-            renderSpeed(previousFeature);
-            if (hotspotState) hotspotState.textContent = `Hotspot state: Leaving ${RISK_LABEL[current.risk]} risk DBSCAN cluster ${current.id}`;
-            return;
-          }
+      const { events, primary } = tracker.update(features, longitude, latitude);
+      current = primary;
+      renderSpeed(primary.feature);
+      events.forEach((event) => {
+        if (event.type === "approach") {
+          announce(speedAlerts ? speedAlerts.approachMessage : "Careful! Accident hotspot ahead. Please slow down.");
+        } else if (event.type === "enter") {
+          announce(speedAlerts ? speedAlerts.evaluate(event.feature, currentSpeedKmh).message
+            : `You are entering a ${RISK_LABEL[event.risk].toLowerCase()}-risk accident hotspot.`);
         }
+      });
+      if (!hotspotState) return;
+      if (primary.state === "inside") {
+        hotspotState.textContent = `Hotspot state: Inside ${RISK_LABEL[primary.risk]} risk hotspot ${primary.id}`;
+      } else if (primary.state === "approaching") {
+        hotspotState.textContent = `Hotspot state: Approaching ${RISK_LABEL[primary.risk]} risk hotspot ${primary.id} (${Math.round(primary.distance)} m from boundary)`;
+      } else {
+        hotspotState.textContent = "Hotspot state: Outside hotspots";
       }
-      if (next.state === "outside") {
-        current = { state: "outside", id: null };
-        if (hotspotState) hotspotState.textContent = "Hotspot state: Outside DBSCAN clusters";
-        return;
-      }
-      if (next.state === "approaching") {
-        if (previous.state === "outside" || previous.id !== next.id) announce(evaluation.message);
-        current = next;
-        if (hotspotState) hotspotState.textContent = `Hotspot state: Approaching ${RISK_LABEL[next.risk]} risk DBSCAN cluster ${next.id} (within ${APPROACH_METERS} m)`;
-        return;
-      }
-      current = next;
-      if (previous.state === "outside" || previous.id !== next.id) announce(evaluation.message);
-      if (hotspotState) hotspotState.textContent = `Hotspot state: Inside ${RISK_LABEL[next.risk]} risk DBSCAN cluster ${next.id}`;
     }
 
     function onPosition(position) {
@@ -316,6 +279,7 @@
       stopButton.disabled = true;
       if (recenterButton) recenterButton.hidden = true;
       current = { state: "outside", id: null };
+      tracker.reset();
       currentSpeedKmh = null;
       renderSpeed(null);
       if (root.TrafficSpeedometer) root.TrafficSpeedometer.stop("GPS", speedStatus);

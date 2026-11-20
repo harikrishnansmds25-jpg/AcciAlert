@@ -122,5 +122,89 @@
     return { activeIds, entered };
   }
 
-  return Object.freeze({ geometryContainsPoint, geometryDistanceMeters, featureId, hotspotTransitions });
+  const RISK_RANK = Object.freeze({ GREEN: 1, ORANGE: 2, RED: 3 });
+
+  // Risk class of a hotspot point or a DBSCAN polygon. Polygons carry the class
+  // only inside Hotspot_Status, for example "Hotspot HS01 (RED)".
+  function featureRisk(feature) {
+    const properties = (feature && feature.properties) || {};
+    const direct = String(properties.Sev_Class || properties.Severity_Class || properties.Risk_Class || "")
+      .trim().toUpperCase();
+    if (RISK_RANK[direct]) return direct;
+    const status = String(properties.Hotspot_Status || "").toUpperCase().match(/\b(GREEN|ORANGE|RED)\b/);
+    if (status) return status[1];
+    const level = String(properties.Risk_Level || "").trim().toUpperCase();
+    return ({ HIGH: "RED", MEDIUM: "ORANGE", LOW: "GREEN" })[level] || "GREEN";
+  }
+
+  // Stable hotspot key (HS01…) for points and polygons alike.
+  function hotspotKey(feature, index) {
+    const properties = (feature && feature.properties) || {};
+    if (properties.Hotspot_ID) return String(properties.Hotspot_ID);
+    const status = String(properties.Hotspot_Status || "").match(/HS\d+/i);
+    if (status) return status[0].toUpperCase();
+    if (properties.Cluster_ID !== undefined && properties.Cluster_ID !== null) return `cluster-${properties.Cluster_ID}`;
+    return feature && feature.id !== undefined ? String(feature.id) : `feature-${index}`;
+  }
+
+  /*
+   * Two-stage hotspot alert tracker shared by GPS tracking and the demo vehicle.
+   * Per hotspot polygon:
+   *   outside  --(boundary within approachMeters)-->  approaching   emits "approach" (once)
+   *   any      --(position inside polygon)-------->  inside        emits "enter"    (once)
+   *   inside   --(more than hysteresisMeters out)->  leaving       emits "exit"
+   *   approaching/leaving --(beyond approachMeters + hysteresisMeters)--> outside (re-armed)
+   * If a position update jumps straight from outside to inside, only "enter" is emitted.
+   */
+  function createAlertTracker({ approachMeters = 10, hysteresisMeters = 5 } = {}) {
+    let states = new Map();
+
+    function update(features, longitude, latitude, { preview = false } = {}) {
+      const events = [];
+      const measured = [];
+      (features || []).forEach((feature, index) => {
+        const id = hotspotKey(feature, index);
+        const inside = geometryContainsPoint(feature.geometry, longitude, latitude);
+        const distance = inside ? 0 : geometryDistanceMeters(feature.geometry, longitude, latitude);
+        const risk = featureRisk(feature);
+        const previous = preview ? "outside" : states.get(id) || "outside";
+        let state = previous;
+        let event = null;
+        if (inside) {
+          if (previous !== "inside") { state = "inside"; event = "enter"; }
+        } else if (previous === "inside") {
+          if (distance > hysteresisMeters) { state = "leaving"; event = "exit"; }
+        } else if (previous === "outside") {
+          if (distance <= approachMeters) { state = "approaching"; event = "approach"; }
+        } else if (distance > approachMeters + hysteresisMeters) {
+          state = "outside";
+        }
+        if (!preview) {
+          states.set(id, state);
+          if (event) events.push({ type: event, id, feature, risk, distance });
+        }
+        measured.push({ id, feature, risk, distance, state });
+      });
+
+      const order = { exit: 0, approach: 1, enter: 2 };
+      events.sort((a, b) => order[a.type] - order[b.type]
+        || RISK_RANK[b.risk] - RISK_RANK[a.risk] || a.distance - b.distance);
+      const inside = measured.filter((item) => item.state === "inside")
+        .sort((a, b) => RISK_RANK[b.risk] - RISK_RANK[a.risk]);
+      const approaching = measured.filter((item) => item.state === "approaching")
+        .sort((a, b) => a.distance - b.distance);
+      const primary = inside[0] || approaching[0];
+      return {
+        events,
+        primary: primary ? { ...primary } : { state: "outside", id: null, feature: null, risk: null, distance: Infinity },
+      };
+    }
+
+    return Object.freeze({ update, reset() { states = new Map(); } });
+  }
+
+  return Object.freeze({
+    geometryContainsPoint, geometryDistanceMeters, featureId, hotspotTransitions,
+    featureRisk, hotspotKey, createAlertTracker, RISK_RANK,
+  });
 }));
