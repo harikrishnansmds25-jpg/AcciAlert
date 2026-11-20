@@ -42,8 +42,11 @@ needed if a local dataset is absent and an optional fallback is configured.
 - Approach distance and polygon distance are measured in metres. The approach
   warning is issued within 10 m of a DBSCAN polygon; risk-class alerts trigger
   on entry. A 5 m exit hysteresis prevents repeated alerts at polygon edges.
-- The voice control is separate from tracking. Starting GPS unlocks speech from
-  the user's tap where supported; enable Voice alerts to hear alerts.
+- Voice alerts are On by default and are shared by GPS tracking and the demo
+  simulation (js/voice-alerts.js). Each panel has a "Voice alerts: On/Off"
+  button; the choice is remembered in the browser. Turning voice on says
+  "Voice alerts on." so you can confirm sound works. Alerts are queued and
+  spoken in order, and a stuck browser speech engine is reset automatically.
 - The map follows the device initially. Dragging pauses following; Recenter on
   me resumes it. A screen wake lock is requested where supported.
 - Keep the page open and visible. A web page cannot guarantee background

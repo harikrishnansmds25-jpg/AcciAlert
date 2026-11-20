@@ -259,30 +259,16 @@
       return closest ? closest.progress : 0;
     }
 
+    // Show the alert text and speak it through the shared voice queue (voice-alerts.js),
+    // which honours the Voice alerts On/Off button.
     function announce(message) {
       if (!message) return;
       elements.alert.textContent = message;
-      if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) {
-        setState("Simulation active. Voice playback is not supported in this browser.");
-        return;
-      }
-      const utterance = new root.SpeechSynthesisUtterance(message);
-      utterance.lang = "en-IN";
-      utterance.onstart = () => {
-        if (enabled) setState("Simulation active. Voice alert is playing.");
-      };
-      utterance.onerror = (event) => {
-        if (!enabled) return;
-        const detail = event.error === "canceled" || event.error === "interrupted"
-          ? "Voice alert was cancelled." : "The browser could not play the voice alert.";
-        setState(`Simulation active. ${detail}`);
-      };
-      try {
-        root.speechSynthesis.speak(utterance);
-      } catch (error) {
-        setState("Simulation active. The browser could not start the voice alert.");
-        console.error("Demo vehicle speech synthesis failed:", error);
-      }
+      if (root.TrafficVoice) root.TrafficVoice.say(message);
+    }
+
+    function unlockVoice() {
+      if (root.TrafficVoice) root.TrafficVoice.unlock();
     }
 
     // Stage 1: within 10 m of a hotspot boundary -> one approach alert.
@@ -410,6 +396,7 @@
       renderSpeed(null);
       if (root.TrafficSpeedometer) root.TrafficSpeedometer.stop("Demo", "Stopped");
       elements.alert.textContent = "No demo alert yet.";
+      if (root.TrafficVoice) root.TrafficVoice.stop();
       setState("Simulation is off.");
     }
 
@@ -476,6 +463,7 @@
       if (!enabled || !routeCoordinates) return;
       pause();
       tracker.reset();
+      if (root.TrafficVoice) root.TrafficVoice.stop();
       elements.alert.textContent = "No demo alert yet.";
       routeProgress = 0;
       lateralOffset = 0;
@@ -502,6 +490,7 @@
       const action = keyAction(event);
       if (!action) return;
       event.preventDefault();
+      if (!event.repeat) unlockVoice();
       pressedKeys.add(action);
       if (!running) run(false);
       else if (autoDrive) {
@@ -523,9 +512,9 @@
 
     elements.toggle.addEventListener("click", () => {
       if (enabled) disable();
-      else enable();
+      else { unlockVoice(); enable(); }
     });
-    elements.start.addEventListener("click", () => run(true));
+    elements.start.addEventListener("click", () => { unlockVoice(); run(true); });
     elements.pause.addEventListener("click", pause);
     elements.reset.addEventListener("click", reset);
     return Object.freeze({ disable, isEnabled: () => enabled });

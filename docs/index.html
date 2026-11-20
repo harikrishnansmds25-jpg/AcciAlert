@@ -12,22 +12,23 @@
     href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"
     crossorigin="anonymous"
   >
-  <link rel="stylesheet" href="css/styles.css?v=f17a324">
-  <script defer src="js/intro-animation.js"></script>
+  <link rel="stylesheet" href="css/styles.css?v=20261120-voice2">
+  <script defer src="js/intro-animation.js?v=20261120-voice2"></script>
   <script
     defer
     src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
     crossorigin="anonymous"
   ></script>
-  <script defer src="js/config.js"></script>
-  <script defer src="js/hotspot-geometry.js"></script>
-  <script defer src="js/dbscan-clusters.js"></script>
-  <script defer src="js/accident-points.js"></script>
-  <script defer src="js/road-corridor.js"></script>
-  <script defer src="js/hotspot-points.js"></script>
-  <script defer src="js/vehicle-simulation.js?v=demo-voice-start-20261120"></script>
-  <script defer src="js/gps-tracking.js"></script>
-  <script defer src="js/app.js"></script>
+  <script defer src="js/config.js?v=20261120-voice2"></script>
+  <script defer src="js/hotspot-geometry.js?v=20261120-voice2"></script>
+  <script defer src="js/dbscan-clusters.js?v=20261120-voice2"></script>
+  <script defer src="js/accident-points.js?v=20261120-voice2"></script>
+  <script defer src="js/road-corridor.js?v=20261120-voice2"></script>
+  <script defer src="js/hotspot-points.js?v=20261120-voice2"></script>
+  <script defer src="js/voice-alerts.js?v=20261120-voice2"></script>
+  <script defer src="js/vehicle-simulation.js?v=20261120-voice2"></script>
+  <script defer src="js/gps-tracking.js?v=20261120-voice2"></script>
+  <script defer src="js/app.js?v=20261120-voice2"></script>
 </head>
 <body>
   <section id="intro-splash" class="intro-splash" aria-label="AcciAlert opening animation" hidden>
@@ -63,12 +64,13 @@
         <div class="gps-controls__buttons">
           <button id="gps-start" type="button">Start GPS Tracking</button>
           <button id="gps-stop" type="button" disabled>Stop GPS</button>
-          <button id="voice-toggle" type="button" aria-pressed="false">Voice alerts: Off</button>
+          <button id="voice-toggle" class="voice-toggle" type="button" data-voice-toggle aria-pressed="true">🔊 Voice alerts: On</button>
         </div>
         <p id="gps-status" role="status" aria-live="polite">GPS is off.</p>
-        <p id="voice-status" role="status" aria-live="polite">Voice alerts are off.</p>
+        <p id="voice-status" class="voice-status" data-voice-status role="status" aria-live="polite">Voice alerts are on.</p>
         <p id="gps-coordinates">Position: not available</p>
         <p id="gps-hotspot-state">Hotspot state: not available</p>
+        <p id="gps-alert" class="alert-text" role="status" aria-live="polite">Last alert: none yet</p>
         <div class="speed-alert-card" aria-live="polite">
           <strong>Speed alert</strong>
           <span id="gps-speed">Current speed: unavailable</span>
@@ -87,7 +89,9 @@
           <button id="simulation-start" type="button" disabled>Start Simulation</button>
           <button id="simulation-pause" type="button" disabled>Pause Simulation</button>
           <button id="simulation-reset" type="button" disabled>Reset Vehicle</button>
+          <button id="demo-voice-toggle" class="voice-toggle" type="button" data-voice-toggle aria-pressed="true">🔊 Voice alerts: On</button>
         </div>
+        <p id="demo-voice-status" class="voice-status" data-voice-status role="status" aria-live="polite">Voice alerts are on.</p>
         <p id="simulation-state" role="status" aria-live="polite">Simulation is off.</p>
         <p id="vehicle-position">Vehicle position: not available</p>
         <p id="vehicle-hotspot-status">Outside hotspot</p>
@@ -99,7 +103,7 @@
           <span id="vehicle-recommended-speed">Recommended speed: —</span>
           <span id="vehicle-speed-status" class="speed-status">Speed status: —</span>
         </div>
-        <p id="vehicle-alert" role="status" aria-live="polite">No demo alert yet.</p>
+        <p id="vehicle-alert" class="alert-text" role="status" aria-live="polite">No demo alert yet.</p>
         <p class="simulation-help">Start drives forward. Use ↑/W to move forward, ↓/S backward, ←/A left, →/D right. Drag the vehicle to reposition it on the road.</p>
       </details>
     </section>

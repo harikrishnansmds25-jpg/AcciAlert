@@ -5,7 +5,6 @@
   const APPROACH_METERS = 10;
   const EXIT_HYSTERESIS_METERS = 5;
   const MAX_ALERT_ACCURACY_METERS = 30;
-  const MIN_SPEECH_GAP_MS = 1200;
   const RISK_LABEL = Object.freeze({ GREEN: "Low", ORANGE: "Medium", RED: "High" });
   const speedAlerts = root.TrafficSpeedAlerts;
 
@@ -25,10 +24,9 @@
     const el = (id) => document.getElementById(id);
     const startButton = el("gps-start");
     const stopButton = el("gps-stop");
-    const voiceButton = el("voice-toggle");
     const recenterButton = el("gps-recenter");
     const status = el("gps-status");
-    const voiceStatus = el("voice-status");
+    const alertText = el("gps-alert");
     const coordinates = el("gps-coordinates");
     const hotspotState = el("gps-hotspot-state");
     const fixTime = el("gps-fix-time");
@@ -41,7 +39,6 @@
 
     let watchId = null;
     let running = false;
-    let voiceEnabled = false;
     let features = null;
     let featurePromise = null;
     let usingBundledClusters = false;
@@ -50,8 +47,6 @@
     let lastPosition = null;
     let currentSpeedKmh = null;
     let current = { state: "outside", id: null };
-    let lastSpokenAt = 0;
-    let speechQueue = [];
     let wakeLock = null;
     let follow = true;
     let hasCentered = false;
@@ -122,50 +117,15 @@
       return featurePromise;
     }
 
-    function pumpSpeech() {
-      if (!running || !voiceEnabled || !speechQueue.length || !root.speechSynthesis) return;
-      if (root.speechSynthesis.speaking || root.speechSynthesis.pending) return;
-      const wait = Math.max(0, MIN_SPEECH_GAP_MS - (Date.now() - lastSpokenAt));
-      if (wait) { window.setTimeout(pumpSpeech, wait); return; }
-      const item = speechQueue.shift();
-      const utterance = new root.SpeechSynthesisUtterance(item.text);
-      utterance.lang = "en-IN";
-      utterance.onstart = () => { if (voiceStatus) voiceStatus.textContent = "Voice alert is playing."; };
-      utterance.onend = () => {
-        lastSpokenAt = Date.now();
-        if (voiceStatus && voiceEnabled) voiceStatus.textContent = speechQueue.length ? "Voice alert queued." : "Voice alert finished.";
-        pumpSpeech();
-      };
-      utterance.onerror = (event) => {
-        if (event.error !== "canceled" && event.error !== "interrupted" && voiceStatus) {
-          voiceStatus.textContent = "The browser could not play the alert. Check sound settings.";
-        }
-        lastSpokenAt = Date.now();
-        pumpSpeech();
-      };
-      try {
-        lastSpokenAt = Date.now();
-        root.speechSynthesis.speak(utterance);
-      } catch (error) {
-        if (voiceStatus) voiceStatus.textContent = "The browser could not start voice alerts.";
-      }
-    }
-
+    // Alerts are shown as text and spoken through the shared voice queue (voice-alerts.js),
+    // which honours the Voice alerts On/Off buttons and recovers from stuck browser speech.
     function announce(text) {
-      if (voiceStatus) voiceStatus.textContent = text.endsWith(".") ? text : `${text}.`;
-      if (!voiceEnabled || !root.speechSynthesis || !root.SpeechSynthesisUtterance) return;
-      speechQueue.push({ text });
-      pumpSpeech();
+      if (alertText) alertText.textContent = `Last alert: ${text}`;
+      if (root.TrafficVoice) root.TrafficVoice.say(text);
     }
 
     function unlockSpeechFromGesture() {
-      if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) return;
-      try {
-        const unlock = new root.SpeechSynthesisUtterance("");
-        unlock.volume = 0;
-        root.speechSynthesis.speak(unlock);
-        root.speechSynthesis.resume();
-      } catch (error) { /* Text alerts remain available when speech is blocked. */ }
+      if (root.TrafficVoice) root.TrafficVoice.unlock();
     }
 
     async function acquireWakeLock() {
@@ -174,7 +134,7 @@
         wakeLock = await navigator.wakeLock.request("screen");
         wakeLock.addEventListener("release", () => { wakeLock = null; });
       } catch (error) {
-        if (voiceStatus) voiceStatus.textContent = "Screen may lock during tracking; keep the app visible.";
+        console.info("Screen wake lock unavailable; keep the app visible during tracking.", error);
       }
     }
 
@@ -272,8 +232,7 @@
       watchId = null;
       running = false;
       isTracking = false;
-      speechQueue = [];
-      if (root.speechSynthesis) root.speechSynthesis.cancel();
+      if (root.TrafficVoice) root.TrafficVoice.stop();
       releaseWakeLock();
       startButton.disabled = false;
       stopButton.disabled = true;
@@ -315,6 +274,7 @@
       hasCentered = false;
       if (coordinates) coordinates.textContent = "Position: not available";
       if (fixTime) fixTime.textContent = "Last fix: not available";
+      if (alertText) alertText.textContent = "Last alert: none yet";
       if (hotspotState) hotspotState.textContent = "Hotspot state: not available";
       setStatus("GPS tracking stopped.");
     }
@@ -364,21 +324,6 @@
 
     startButton.addEventListener("click", startGps);
     stopButton.addEventListener("click", stopGps);
-    if (voiceButton) {
-      if (!root.speechSynthesis || !root.SpeechSynthesisUtterance) {
-        voiceButton.disabled = true;
-        voiceButton.textContent = "Voice alerts unavailable";
-        if (voiceStatus) voiceStatus.textContent = "This browser does not support speech synthesis.";
-      } else {
-        voiceButton.addEventListener("click", () => {
-          voiceEnabled = !voiceEnabled;
-          voiceButton.setAttribute("aria-pressed", String(voiceEnabled));
-          voiceButton.textContent = `Voice alerts: ${voiceEnabled ? "On" : "Off"}`;
-          if (!voiceEnabled) { speechQueue = []; root.speechSynthesis.cancel(); }
-          else { unlockSpeechFromGesture(); if (voiceStatus) voiceStatus.textContent = "Voice alerts enabled."; }
-        });
-      }
-    }
     if (recenterButton) recenterButton.addEventListener("click", () => {
       if (!lastPosition) return;
       follow = true;
